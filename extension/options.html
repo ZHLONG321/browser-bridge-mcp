@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Browser Bridge settings</title>
+  <style>body{font:16px system-ui;max-width:680px;margin:32px auto;padding:0 20px}label{display:block;margin:16px 0}input[type=text],input[type=url]{display:block;width:100%;box-sizing:border-box;padding:8px}button{padding:8px 16px}#message{white-space:pre-wrap}</style>
+</head>
+<body>
+  <h1>Browser Bridge</h1>
+  <form id="form">
+    <label>Service URL<input id="bridgeBaseUrl" type="url" required></label>
+    <button type="submit">Save</button>
+  </form>
+  <label><input id="debuggingEnabled" type="checkbox"> Enable debugging</label>
+  <p id="debuggingStatus"></p>
+  <p>For private windows, enable Allow in Incognito / Allow in InPrivate in the browser's extension Details. Normal and private sessions are listed separately.</p>
+  <p id="message" role="status"></p>
+  <script src="options.js"></script>
+</body>
+</html>

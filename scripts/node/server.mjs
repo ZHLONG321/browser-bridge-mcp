@@ -1,0 +1,235 @@
+import { createServer } from 'node:http';
+import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto';
+import { mkdirSync, openSync, closeSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, basename } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
+import { parseArgs } from 'node:util';
+import { RdpManager, NativeError } from './rdp.mjs';
+
+const SERVICE = 'browser-bridge-skill';
+const options = parseArgs({options: {session: {type: 'string'}, port: {type: 'string', default: '30003'}, serve: {type: 'boolean', default: false}}}).values;
+const port = Number(options.port);
+if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Port must be 1..65535.');
+if (!options.session || options.session === '.' || options.session === '..' || basename(options.session) !== options.session || /[\\/:\0]/.test(options.session)) throw new Error('Supply --session with one session-directory name.');
+
+if (!options.serve) {
+  const directory = join(tmpdir(), options.session, 'browser bridge');
+  mkdirSync(directory, {recursive: true});
+  const log = join(directory, 'server.log');
+  const descriptor = openSync(log, 'a');
+  const child = spawn(process.execPath, [fileURLToPath(import.meta.url), '--serve', '--session', options.session, '--port', String(port)], {
+    detached: true, windowsHide: true, stdio: ['ignore', descriptor, descriptor, 'ipc'],
+  });
+  closeSync(descriptor);
+  const outcome = await new Promise(resolve => {
+    const timer = setTimeout(() => resolve({error: 'Startup acknowledgement timed out; inspect the log before starting another process.'}), 5000);
+    child.once('message', message => { clearTimeout(timer); resolve(message); });
+    child.once('error', error => { clearTimeout(timer); resolve({error: error.message}); });
+    child.once('exit', code => { clearTimeout(timer); resolve({error: `Server exited (${code}); inspect the log.`}); });
+  });
+  if (child.connected) child.disconnect();
+  child.unref();
+  console.log(JSON.stringify({...outcome, log}));
+  if (outcome.error) process.exitCode = 1;
+} else {
+  const secret = randomBytes(32).toString('hex');
+  const profiles = new Map();
+  const pending = new Map();
+  const rdp = new RdpManager();
+  class Failure extends Error {
+    constructor(status, code, message, extra = {}) { super(message); Object.assign(this, {status, code, extra}); }
+  }
+  const fail = (status, code, message, extra) => { throw new Failure(status, code, message, extra); };
+  const send = (response, status, body) => {
+    response.writeHead(status, {'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store'});
+    response.end(JSON.stringify(body));
+  };
+  const log = (event, values = {}) => console.log(JSON.stringify({at: new Date().toISOString(), event, ...values}));
+  const live = profile => Date.now() - profile.seen < 45000;
+  const selected = url => {
+    const id = url.searchParams.get('profile_id');
+    const context = url.searchParams.get('context');
+    if (!id || !['normal', 'private'].includes(context)) fail(400, 'SELECTION_REQUIRED', 'Explicit profile_id and normal/private context are required.');
+    const profile = profiles.get(id);
+    if (!profile || !live(profile)) fail(404, 'PROFILE_NOT_CONNECTED', 'The selected profile is not connected. Enumerate profiles again.');
+    return {profile, context, id};
+  };
+  const tokenValid = value => typeof value === 'string' && value.length === secret.length && timingSafeEqual(Buffer.from(value), Buffer.from(secret));
+  function snapshot(body) {
+    if (typeof body.profile_id !== 'string' || typeof body.instance_id !== 'string' || !Array.isArray(body.tabs) || !Array.isArray(body.windows)) fail(400, 'INVALID_SNAPSHOT', 'Invalid extension inventory.');
+    let profile = profiles.get(body.profile_id);
+    if (!profile || profile.instance !== body.instance_id) {
+      if (profile) {
+        profile.waiter?.();
+        for (const entry of pending.values()) if (entry.profile === body.profile_id) entry.reject(new Failure(409, 'EXTENSION_RESTARTED', 'The extension restarted; inspect the target before repeating a mutation.', {outcome_unknown: entry.dispatched}));
+      }
+      profile = {instance: body.instance_id, queue: [], waiter: null};
+      profiles.set(body.profile_id, profile);
+    }
+    Object.assign(profile, {seen: Date.now(), tabs: body.tabs, windows: body.windows, browser: body.browser || 'chromium', private_allowed: body.private_allowed === true, debugging_enabled: body.debugging_enabled === true});
+    return profile;
+  }
+  const extensionInventory = () => [...profiles.entries()].filter(([, p]) => live(p)).map(([id, p]) => ({profile_id: id, connection_id: `browser-extension:${p.instance}`, browser: p.browser, protocol: p.browser === 'firefox' ? 'webextension' : 'cdp', capabilities: p.browser === 'firefox' ? ['webextension'] : ['javascript', 'list_frames', 'cdp', 'tab_control', 'window_control', 'userscript'], connected: true, private_allowed: p.private_allowed, debugging_enabled: p.debugging_enabled, windows: p.windows}));
+  const inventory = () => ({status: 'completed', connections: [...extensionInventory(), ...rdp.inventory()]});
+  function findTabs(body) {
+    const match = body.match === undefined ? {} : body.match;
+    const query = body.query === undefined ? '' : body.query;
+    if (!match || typeof match !== 'object' || Array.isArray(match) || Object.values(match).some(value => value !== null && !['string', 'number', 'boolean'].includes(typeof value)) || typeof query !== 'string') fail(400, 'INVALID_MATCH', 'match must contain scalar metadata values; query must be a string.');
+    const needle = query.toLowerCase();
+    const matches = [];
+    for (const [id, profile] of profiles) {
+      if (!live(profile)) continue;
+      for (const tab of profile.tabs) {
+        const row = {...tab, profile_id: id, connection_id: `browser-extension:${profile.instance}`, browser: profile.browser, context: tab.incognito ? 'private' : 'normal'};
+        if (Object.entries(match).every(([key, value]) => Object.hasOwn(row, key) && row[key] === value) && Object.values(row).some(value => String(value).toLowerCase().includes(needle))) matches.push(row);
+      }
+    }
+    return {status: 'completed', matches};
+  }
+  function dispatch(profile) {
+    const jobs = [];
+    for (const jobId of profile.queue.splice(0)) {
+      const entry = pending.get(jobId);
+      if (!entry) continue;
+      entry.dispatched = true;
+      jobs.push(entry.job);
+      log('dispatched', {job_id: jobId, profile_id: entry.profile, operation: entry.job.kind});
+    }
+    return jobs;
+  }
+  const server = createServer(async (request, response) => {
+    try {
+      if (request.headers.host !== `127.0.0.1:${port}` && request.headers.host !== `localhost:${port}`) fail(403, 'HOST_FORBIDDEN', 'Use the configured loopback address.');
+      const url = new URL(request.url, `http://127.0.0.1:${port}`);
+      const extensionRoute = url.pathname.startsWith('/extension/');
+      const origin = request.headers.origin;
+      if (extensionRoute) {
+        if (origin && !/^(chrome-extension:\/\/[a-p]+|moz-extension:\/\/[a-f0-9-]+)$/i.test(origin)) fail(403, 'ORIGIN_FORBIDDEN', 'Only extension origins may use this route.');
+        if (url.pathname !== '/extension/bootstrap' && !tokenValid(request.headers['x-browser-bridge-secret'])) fail(401, 'INVALID_SECRET', 'Reconnect the extension.');
+      } else if (origin || (url.pathname !== '/probe' && request.headers['x-browser-bridge-client'] !== '1')) fail(403, 'CLIENT_HEADER_REQUIRED', 'Use the CLI or client module.');
+      if (request.method === 'GET' && url.pathname === '/probe') return send(response, 200, {service: SERVICE, version: 1, pid: process.pid});
+      if (request.method === 'GET' && url.pathname === '/extension/bootstrap') return send(response, 200, {secret});
+      if (request.method === 'GET' && url.pathname === '/profiles') return send(response, 200, {profiles: extensionInventory()});
+      if (request.method === 'GET' && url.pathname === '/discover') return send(response, 200, inventory());
+      if (request.method === 'GET' && url.pathname === '/tabs') {
+        const {profile, context, id} = selected(url);
+        const windowId = url.searchParams.has('window_id') ? Number(url.searchParams.get('window_id')) : undefined;
+        if (windowId !== undefined && !Number.isSafeInteger(windowId)) fail(400, 'INVALID_WINDOW', 'window_id must be an integer.');
+        return send(response, 200, {profile_id: id, context, tabs: profile.tabs.filter(tab => tab.incognito === (context === 'private') && (windowId === undefined || tab.window_id === windowId))});
+      }
+      if (request.method !== 'POST') fail(404, 'NOT_FOUND', 'Unknown service route.');
+      let text = '';
+      request.setEncoding('utf8');
+      for await (const chunk of request) text += chunk;
+      let body;
+      try { body = text ? JSON.parse(text) : {}; } catch { fail(400, 'INVALID_JSON', 'Provide UTF-8 JSON.'); }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) fail(400, 'INVALID_JSON', 'The request body must be an object.');
+      if (url.pathname === '/find-tabs') return send(response, 200, findTabs(body));
+      if (url.pathname === '/rdp') return send(response, 200, await rdp.execute(body));
+      if (url.pathname === '/discover') {
+        if (typeof body.connection_id === 'string' && body.connection_id.startsWith('browser-extension:')) {
+          url.pathname = '/request';
+          url.searchParams.set('profile_id', body.profile_id || '');
+          url.searchParams.set('context', body.context || '');
+          body = {...body, operation: 'webextension', action: 'describe', path: body.namespace || ''};
+        } else if (body.connection_id || body.rdp_port !== undefined || body.actor) return send(response, 200, await rdp.discover(body));
+        else return send(response, 200, inventory());
+      }
+      if (url.pathname === '/shutdown') {
+        send(response, 200, {stopping: true});
+        for (const profile of profiles.values()) profile.waiter?.();
+        for (const entry of pending.values()) entry.reject(new Failure(409, 'SERVER_STOPPING', 'Service stopping; inspect dispatched work before repeating it.', {outcome_unknown: entry.dispatched}));
+        rdp.close();
+        server.close();
+        return;
+      }
+      if (url.pathname === '/extension/snapshot' || url.pathname === '/extension/poll') {
+        const profile = snapshot(body);
+        const acknowledged = [];
+        for (const result of body.results || []) {
+          const entry = pending.get(result.job_id);
+          if (entry && entry.profile === body.profile_id && entry.job.tab_id === result.tab_id && entry.dispatched) entry.resolve(result);
+          acknowledged.push(result.job_id);
+        }
+        if (url.pathname === '/extension/snapshot' || acknowledged.length) return send(response, 200, {acknowledged, jobs: []});
+        if (!profile.queue.length) await new Promise(resolve => {
+          const finish = () => { clearTimeout(timer); if (profile.waiter === finish) profile.waiter = null; resolve(); };
+          const timer = setTimeout(finish, 12000);
+          profile.waiter?.();
+          profile.waiter = finish;
+          response.once('close', finish);
+        });
+        if (!response.destroyed) send(response, 200, {acknowledged, jobs: dispatch(profile)});
+        return;
+      }
+      if (url.pathname !== '/request') fail(404, 'NOT_FOUND', 'Unknown service route.');
+      const {profile, context, id} = selected(url);
+      const operation = body.operation;
+      const native = operation === 'webextension';
+      if (native && (profile.browser !== 'firefox' || body.connection_id !== `browser-extension:${profile.instance}`)) fail(409, 'CONNECTION_MISMATCH', 'Use the selected live Firefox extension connection_id from discover.');
+      if (!native && profile.browser === 'firefox') fail(400, 'UNSUPPORTED_OPERATION', 'Use Firefox webextension or its separate RDP connection; Chromium operations do not apply.');
+      const tab = profile.tabs.find(item => item.tab_id === body.tab_id);
+      if ((!native && operation !== 'window_control' || body.tab_id !== undefined) && !tab) fail(404, 'TAB_NOT_FOUND', 'The tab is not visible in this profile. Enumerate tabs again.');
+      if (tab && tab.incognito !== (context === 'private')) fail(409, 'CONTEXT_MISMATCH', 'The tab belongs to the other window privacy context.');
+      if (body.window_id !== undefined) {
+        if (!Number.isSafeInteger(body.window_id)) fail(400, 'INVALID_WINDOW', 'window_id must be an integer.');
+        if (!profile.windows.some(window => window.window_id === body.window_id && window.incognito === (context === 'private')) || tab && tab.window_id !== body.window_id) fail(409, 'WINDOW_MISMATCH', 'The target does not belong to the requested window and privacy context.');
+      }
+      if (!['javascript', 'list_frames', 'cdp', 'tab_control', 'window_control', 'userscript', 'webextension'].includes(operation)) fail(400, 'UNKNOWN_OPERATION', 'Use a documented browser operation.');
+      if (operation === 'window_control') {
+        if (!['create', 'close'].includes(body.action)) fail(400, 'INVALID_ACTION', 'Use window action create or close.');
+        if (body.action === 'close' && body.window_id === undefined) fail(400, 'INVALID_WINDOW', 'Closing a window requires an exact window_id.');
+        if (context === 'private' && !profile.private_allowed) fail(403, 'PRIVATE_ACCESS_REQUIRED', 'Enable Allow in Incognito / Allow in InPrivate for the selected extension.');
+      }
+      if (native) {
+        const action = body.action ?? 'call';
+        if (!['call', 'describe', 'watch', 'unwatch', 'events', 'release'].includes(action)) fail(400, 'INVALID_ACTION', 'Unknown WebExtension action.');
+        if (body.path !== undefined && typeof body.path !== 'string') fail(400, 'INVALID_PATH', 'path must be a string.');
+        if (['call', 'watch', 'release'].includes(action) && (typeof body.path !== 'string' || !body.path)) fail(400, 'INVALID_PATH', 'This action requires path.');
+        if (body.args !== undefined && !Array.isArray(body.args)) fail(400, 'INVALID_ARGS', 'args must be positional arguments in an array.');
+        if (action === 'unwatch' && typeof body.subscription_id !== 'string') fail(400, 'INVALID_SUBSCRIPTION', 'unwatch requires subscription_id.');
+        if (body.after !== undefined && (!Number.isSafeInteger(body.after) || body.after < 0)) fail(400, 'INVALID_CURSOR', 'after must be a nonnegative integer.');
+        if (body.wait_ms !== undefined && (!Number.isInteger(body.wait_ms) || body.wait_ms < 0 || body.wait_ms > 15000)) fail(400, 'INVALID_WAIT', 'wait_ms must be 0..15000.');
+        body.action = action;
+      }
+      if (!['tab_control', 'window_control'].includes(operation) && !profile.debugging_enabled) fail(409, 'DEBUGGING_DISABLED', 'Enable debugging in the selected profile\'s extension controls.');
+      if (operation === 'javascript' && (!Array.isArray(body.scripts) || !body.scripts.length || body.scripts.some(script => typeof script !== 'string'))) fail(400, 'INVALID_SCRIPTS', 'scripts must be a nonempty array of strings.');
+      if (operation === 'cdp' && (!Array.isArray(body.commands) || !body.commands.length || body.commands.some(command => typeof command?.method !== 'string' || !command.method))) fail(400, 'INVALID_COMMANDS', 'commands must contain CDP method/params objects.');
+      const mode = body.mode ?? 'read_only';
+      if (!['read_only', 'authorized_mutation'].includes(mode)) fail(400, 'INVALID_MODE', 'Use read_only or authorized_mutation.');
+      if (body.allow_foreground !== undefined && typeof body.allow_foreground !== 'boolean') fail(400, 'INVALID_FOREGROUND_FLAG', 'allow_foreground must be a boolean.');
+      if ((['tab_control', 'window_control'].includes(operation) || operation === 'userscript' && !['list', 'list_commands'].includes(body.userscript_action)) && mode !== 'authorized_mutation') fail(403, 'MUTATION_NOT_AUTHORIZED', 'This operation requires authorized_mutation.');
+      const timeout = body.timeout_ms ?? 30000;
+      if (!Number.isFinite(timeout) || timeout <= 0) fail(400, 'INVALID_TIMEOUT', 'timeout_ms must be positive.');
+      const jobId = randomUUID();
+      const job = {...body, kind: operation, mode, job_id: jobId, profile_id: id, context, deadline_at: Date.now() + timeout};
+      if (operation === 'tab_control') job.tab_control = {...body, target_tab_id: body.tab_id, context};
+      const result = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          const entry = pending.get(jobId);
+          entry?.reject(new Failure(504, 'DEADLINE_EXCEEDED', 'The deadline expired. Inspect the target before repeating dispatched work.', {job_id: jobId, outcome_unknown: entry.dispatched}));
+        }, timeout);
+        const finish = callback => value => { clearTimeout(timer); pending.delete(jobId); callback(value); };
+        pending.set(jobId, {profile: id, dispatched: false, job, resolve: finish(resolve), reject: finish(reject)});
+        profile.queue.push(jobId);
+        profile.waiter?.();
+      });
+      log('completed', {job_id: jobId, profile_id: id, operation});
+      send(response, 200, result);
+    } catch (error) {
+      if (!(error instanceof Failure || error instanceof NativeError)) log('request_failed', {type: error?.name || 'Error'});
+      if (!response.headersSent && !response.destroyed) send(response, error.status || 500, {code: error.code || 'INTERNAL_ERROR', message: error instanceof Failure || error instanceof NativeError ? error.message : 'Service error; inspect server.log.', ...(error.extra || {})});
+    }
+  });
+  server.on('error', error => {
+    log('startup_failed', {code: error.code});
+    process.send?.({error: error.code === 'EADDRINUSE' ? 'Port already in use; choose an explicit --port or inspect the existing service.' : error.code});
+    process.exitCode = 1;
+  });
+  server.listen(port, '127.0.0.1', () => {
+    log('listening', {port, pid: process.pid});
+    process.send?.({started: true, pid: process.pid, url: `http://127.0.0.1:${port}`});
+  });
+}

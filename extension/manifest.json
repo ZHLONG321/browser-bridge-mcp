@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Browser Bridge",
+  "version": "1.0.2",
+  "description": "Background browser automation with explicit profile and normal/private window selection.",
+  "incognito": "spanning",
+  "permissions": [
+    "debugger",
+    "tabs",
+    "storage",
+    "offscreen",
+    "alarms"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "options_page": "options.html",
+  "action": {
+    "default_title": "Browser Bridge",
+    "default_popup": "popup.html"
+  }
+}

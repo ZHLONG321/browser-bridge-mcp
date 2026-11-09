@@ -1,0 +1,61 @@
+{
+  "manifest_version": 2,
+  "name": "Firefox Browser Bridge",
+  "version": "1.1.2",
+  "description": "Native Firefox WebExtension API bridge for the local Browser Bridge service.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "firefox-browser-bridge@browser-bridge.local"
+    }
+  },
+  "background": {
+    "scripts": [
+      "background.js"
+    ],
+    "persistent": true
+  },
+  "browser_action": {
+    "default_title": "Firefox Browser Bridge"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "permissions": [
+    "tabs",
+    "storage",
+    "contextualIdentities",
+    "dns",
+    "menus",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "optional_permissions": [
+    "<all_urls>",
+    "bookmarks",
+    "browsingData",
+    "browserSettings",
+    "clipboardRead",
+    "clipboardWrite",
+    "cookies",
+    "downloads",
+    "downloads.open",
+    "find",
+    "history",
+    "management",
+    "nativeMessaging",
+    "notifications",
+    "privacy",
+    "proxy",
+    "scripting",
+    "sessions",
+    "tabHide",
+    "topSites",
+    "webNavigation",
+    "webRequest",
+    "webRequestBlocking"
+  ],
+  "user_scripts": {},
+  "content_security_policy": "script-src 'self' 'unsafe-eval'; object-src 'self'; connect-src http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*",
+  "incognito": "spanning"
+}

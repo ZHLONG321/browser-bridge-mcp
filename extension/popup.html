@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Browser Bridge</title>
+    <style>
+      body { font-family: system-ui, sans-serif; width: 340px; margin: 0; padding: 16px; }
+      dt { font-weight: 600; margin-top: 10px; }
+      dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+      button { margin-top: 14px; padding: 7px 12px; font: inherit; }
+    </style>
+  </head>
+  <body>
+    <strong>Browser Bridge</strong>
+    <p><label><input id="debuggingEnabled" type="checkbox"> Enable debugging</label></p>
+    <p id="debuggingStatus" role="status">Debugging is off. Page controls are unavailable.</p>
+    <dl>
+      <dt>Status</dt><dd id="status">Loading…</dd>
+      <dt>Local Bridge</dt><dd id="base">Not configured</dd>
+      <dt>Visible tabs</dt><dd id="tabs">0</dd>
+      <dt>Last error</dt><dd id="error">None</dd>
+    </dl>
+    <button id="options" type="button">Options</button>
+    <script src="popup.js"></script>
+  </body>
+</html>
