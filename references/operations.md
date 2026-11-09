@@ -18,6 +18,7 @@ scripts\browser-bridge.bat request <profile-id> <normal|private> "<request.json>
 
 | `operation` | Request fields |
 | --- | --- |
+| `debugging` | `action: status / enable`; enable requires exact `tab_id` and `mode: authorized_mutation`; status accepts an optional tab. Both require explicit profile/context and honor optional `window_id`. Available even while the saved debugging switch is off. |
 | `javascript` | `tab_id`, `scripts: ["return document.title;"]`, optional `frame_id` |
 | `list_frames` | `tab_id` |
 | `cdp` | `tab_id`, `commands: [{method, params, session_id?}]`; optional `event_methods`, `collect_events_ms` |
@@ -43,7 +44,21 @@ Example background tab creation, anchored in the selected tab's window:
 
 Results carry `job_id`, `tab_id`, per-item `results` with `status`, `frames`, and collected `events`. An item may fail even if HTTP succeeds; check every requested item. Existing extension result/event capture bounds may return `type: result_truncated` plus a preview; narrow the page query or retrieve the required content in parts instead of assuming the preview is complete.
 
-Expected HTTP errors: 400 malformed request/unsupported operation, 403 forbidden origin or foreground operation, 404 profile/tab absent, 409 debugging disabled/context mismatch/extension restart, 504 deadline exceeded with `outcome_unknown` after dispatch. Connection loss is not an instruction to repeat a write.
+Expected HTTP errors: 400 malformed request/unsupported operation, 403 forbidden origin, missing authorization/private permission or foreground operation, 404 profile/tab absent, 409 debugging disabled/context mismatch/extension restart, 504 deadline exceeded with `outcome_unknown` after dispatch. Connection loss is not an instruction to repeat a write.
+
+## Chromium debugging control
+
+Use the existing `/request?profile_id=...&context=...` route, Node/Python `debugging` client, or the CLI `request` command. `status` is read-only and may omit `tab_id` to inspect the requested context/window. `enable` requires an exact existing tab, validates its current privacy/window again in the extension, persists the profile-wide enabled preference, and attaches only that tab. It performs a read-only debugger command to confirm the connection, with no tab/window activation. It does not grant installation, site, enterprise-policy or private-window permissions.
+
+```json
+{"operation":"debugging","action":"enable","tab_id":"chrome-tab:123","window_id":456,"mode":"authorized_mutation"}
+```
+
+An item's `value` contains `enabled` (saved profile-wide preference), `attached` (at least one matching owned attachment), `attached_tab_ids` (matching Bridge tab IDs), `state` (`disabled`, `waiting`, `connected`), `profile_id`, `context`, and the supplied `window_id` if any. For an exact tab query, `attached` refers only to that tab. A successful enable item has `status: exited` and `attached: true`; connection failures are failed items with the original debugger error. Explicit API enable saves the preference independently of that target's attachment outcome; a failed connection must not be reported as connected or disable other authorized sessions. Query status to distinguish the enabled preference from a failed target. Target enables can run concurrently; manual controls or browser-banner cancellation supersede pending enables and stop reconnection.
+
+Reissuing explicit enable for an already connected target reuses its attachment. After a dispatched timeout, query status before deciding whether enabling is still needed; do not replay the page mutation. Normal page operations establish their own attachment while the preference is enabled. The UI checks actual tracked sessions against `chrome.debugger.getTargets()` and separately shows disabled, enabled/waiting and connected counts. Browser restart can legitimately leave the preference enabled with no session. A worker that lost its attachment map may adopt its own surviving attachment only after a debugger command proves ownership; another debugger's attachment is never treated as this extension's session.
+
+Update both server and Chromium extension (version 1.0.3+) before using this operation. Restart the service and reload the unpacked extension. It is not a Firefox `webextension` native-control switch. Sources: [Debugger API](https://developer.chrome.com/docs/extensions/reference/api/debugger), [extension storage](https://developer.chrome.com/docs/extensions/reference/api/storage).
 
 Firefox adds 409 for a stale/mismatched live connection, 403 for a new RDP connection without explicit prompt permission, and 502 with `outcome_unknown` after an interrupted RDP send. WebExtension native errors are per-result `status: failed`/`error`; RDP actor errors remain unchanged inside packets. Inspect both transport and native result.
 

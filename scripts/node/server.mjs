@@ -71,7 +71,7 @@ if (!options.serve) {
     Object.assign(profile, {seen: Date.now(), tabs: body.tabs, windows: body.windows, browser: body.browser || 'chromium', private_allowed: body.private_allowed === true, debugging_enabled: body.debugging_enabled === true});
     return profile;
   }
-  const extensionInventory = () => [...profiles.entries()].filter(([, p]) => live(p)).map(([id, p]) => ({profile_id: id, connection_id: `browser-extension:${p.instance}`, browser: p.browser, protocol: p.browser === 'firefox' ? 'webextension' : 'cdp', capabilities: p.browser === 'firefox' ? ['webextension'] : ['javascript', 'list_frames', 'cdp', 'tab_control', 'window_control', 'userscript'], connected: true, private_allowed: p.private_allowed, debugging_enabled: p.debugging_enabled, windows: p.windows}));
+  const extensionInventory = () => [...profiles.entries()].filter(([, p]) => live(p)).map(([id, p]) => ({profile_id: id, connection_id: `browser-extension:${p.instance}`, browser: p.browser, protocol: p.browser === 'firefox' ? 'webextension' : 'cdp', capabilities: p.browser === 'firefox' ? ['webextension'] : ['javascript', 'list_frames', 'cdp', 'tab_control', 'window_control', 'userscript', 'debugging'], connected: true, private_allowed: p.private_allowed, debugging_enabled: p.debugging_enabled, windows: p.windows}));
   const inventory = () => ({status: 'completed', connections: [...extensionInventory(), ...rdp.inventory()]});
   function findTabs(body) {
     const match = body.match === undefined ? {} : body.match;
@@ -171,13 +171,17 @@ if (!options.serve) {
       if (native && (profile.browser !== 'firefox' || body.connection_id !== `browser-extension:${profile.instance}`)) fail(409, 'CONNECTION_MISMATCH', 'Use the selected live Firefox extension connection_id from discover.');
       if (!native && profile.browser === 'firefox') fail(400, 'UNSUPPORTED_OPERATION', 'Use Firefox webextension or its separate RDP connection; Chromium operations do not apply.');
       const tab = profile.tabs.find(item => item.tab_id === body.tab_id);
-      if ((!native && operation !== 'window_control' || body.tab_id !== undefined) && !tab) fail(404, 'TAB_NOT_FOUND', 'The tab is not visible in this profile. Enumerate tabs again.');
+      if ((!native && !['window_control', 'debugging'].includes(operation) || operation === 'debugging' && body.action === 'enable' || body.tab_id !== undefined) && !tab) fail(404, 'TAB_NOT_FOUND', 'The tab is not visible in this profile. Enumerate tabs again.');
       if (tab && tab.incognito !== (context === 'private')) fail(409, 'CONTEXT_MISMATCH', 'The tab belongs to the other window privacy context.');
       if (body.window_id !== undefined) {
         if (!Number.isSafeInteger(body.window_id)) fail(400, 'INVALID_WINDOW', 'window_id must be an integer.');
         if (!profile.windows.some(window => window.window_id === body.window_id && window.incognito === (context === 'private')) || tab && tab.window_id !== body.window_id) fail(409, 'WINDOW_MISMATCH', 'The target does not belong to the requested window and privacy context.');
       }
-      if (!['javascript', 'list_frames', 'cdp', 'tab_control', 'window_control', 'userscript', 'webextension'].includes(operation)) fail(400, 'UNKNOWN_OPERATION', 'Use a documented browser operation.');
+      if (!['javascript', 'list_frames', 'cdp', 'tab_control', 'window_control', 'userscript', 'webextension', 'debugging'].includes(operation)) fail(400, 'UNKNOWN_OPERATION', 'Use a documented browser operation.');
+      if (operation === 'debugging') {
+        if (!['status', 'enable'].includes(body.action)) fail(400, 'INVALID_ACTION', 'Use debugging action status or enable.');
+        if (body.action === 'enable' && context === 'private' && !profile.private_allowed) fail(403, 'PRIVATE_ACCESS_REQUIRED', 'Enable Allow in Incognito / Allow in InPrivate for the selected extension.');
+      }
       if (operation === 'window_control') {
         if (!['create', 'close'].includes(body.action)) fail(400, 'INVALID_ACTION', 'Use window action create or close.');
         if (body.action === 'close' && body.window_id === undefined) fail(400, 'INVALID_WINDOW', 'Closing a window requires an exact window_id.');
@@ -194,13 +198,13 @@ if (!options.serve) {
         if (body.wait_ms !== undefined && (!Number.isInteger(body.wait_ms) || body.wait_ms < 0 || body.wait_ms > 15000)) fail(400, 'INVALID_WAIT', 'wait_ms must be 0..15000.');
         body.action = action;
       }
-      if (!['tab_control', 'window_control'].includes(operation) && !profile.debugging_enabled) fail(409, 'DEBUGGING_DISABLED', 'Enable debugging in the selected profile\'s extension controls.');
+      if (!['tab_control', 'window_control', 'debugging'].includes(operation) && !profile.debugging_enabled) fail(409, 'DEBUGGING_DISABLED', 'Use debugging action enable with authorized_mutation for the resolved target, or enable debugging in extension controls.');
       if (operation === 'javascript' && (!Array.isArray(body.scripts) || !body.scripts.length || body.scripts.some(script => typeof script !== 'string'))) fail(400, 'INVALID_SCRIPTS', 'scripts must be a nonempty array of strings.');
       if (operation === 'cdp' && (!Array.isArray(body.commands) || !body.commands.length || body.commands.some(command => typeof command?.method !== 'string' || !command.method))) fail(400, 'INVALID_COMMANDS', 'commands must contain CDP method/params objects.');
       const mode = body.mode ?? 'read_only';
       if (!['read_only', 'authorized_mutation'].includes(mode)) fail(400, 'INVALID_MODE', 'Use read_only or authorized_mutation.');
       if (body.allow_foreground !== undefined && typeof body.allow_foreground !== 'boolean') fail(400, 'INVALID_FOREGROUND_FLAG', 'allow_foreground must be a boolean.');
-      if ((['tab_control', 'window_control'].includes(operation) || operation === 'userscript' && !['list', 'list_commands'].includes(body.userscript_action)) && mode !== 'authorized_mutation') fail(403, 'MUTATION_NOT_AUTHORIZED', 'This operation requires authorized_mutation.');
+      if ((['tab_control', 'window_control'].includes(operation) || operation === 'debugging' && body.action === 'enable' || operation === 'userscript' && !['list', 'list_commands'].includes(body.userscript_action)) && mode !== 'authorized_mutation') fail(403, 'MUTATION_NOT_AUTHORIZED', 'This operation requires authorized_mutation.');
       const timeout = body.timeout_ms ?? 30000;
       if (!Number.isFinite(timeout) || timeout <= 0) fail(400, 'INVALID_TIMEOUT', 'timeout_ms must be positive.');
       const jobId = randomUUID();

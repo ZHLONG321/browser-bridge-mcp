@@ -21,8 +21,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 # This file is a direct script entry point; its directory is Python's import root.
-from browser_bridge import Json, JsonObject, http, read_json  # pyright: ignore[reportImplicitRelativeImport]
-from rdp import RdpError, RdpManager  # pyright: ignore[reportImplicitRelativeImport]
+from browser_bridge import Json, JsonObject, http, read_json
+from rdp import RdpError, RdpManager
 
 SERVICE = "browser-bridge-skill"
 
@@ -83,7 +83,7 @@ class State:
                 browser = profile.inventory.get("browser", "chromium")
                 row: JsonObject = {"profile_id": profile.identity, "connection_id": "browser-extension:" + profile.instance,
                                    "browser": browser, "protocol": "webextension" if browser == "firefox" else "cdp", "connected": True,
-                                   "capabilities": ["webextension"] if browser == "firefox" else ["javascript", "list_frames", "cdp", "tab_control", "window_control", "userscript"]}
+                                   "capabilities": ["webextension"] if browser == "firefox" else ["javascript", "list_frames", "cdp", "tab_control", "window_control", "userscript", "debugging"]}
                 for key in ("private_allowed", "debugging_enabled", "windows"):
                     row[key] = profile.inventory[key]
                 rows.append(row)
@@ -289,7 +289,7 @@ def serve(port: int) -> None:
                     raise Failure(400, "UNSUPPORTED_OPERATION", "Use Firefox webextension or its separate RDP connection; Chromium operations do not apply.")
                 tab_id = body.get("tab_id")
                 tab = next((tab for tab in objects(profile.inventory, "tabs") if tab.get("tab_id") == tab_id), None)
-                if (not native and operation != "window_control" or "tab_id" in body) and tab is None:
+                if (not native and operation not in ("window_control", "debugging") or operation == "debugging" and body.get("action") == "enable" or "tab_id" in body) and tab is None:
                     raise Failure(404, "TAB_NOT_FOUND", "The tab is not visible in this profile. Enumerate tabs again.")
                 if tab is not None and tab.get("incognito") is not (context == "private"):
                     raise Failure(409, "CONTEXT_MISMATCH", "The tab belongs to the other window privacy context.")
@@ -299,8 +299,13 @@ def serve(port: int) -> None:
                         raise Failure(400, "INVALID_WINDOW", "window_id must be an integer.")
                     if not any(window.get("window_id") == window_id and window.get("incognito") is (context == "private") for window in objects(profile.inventory, "windows")) or tab is not None and tab.get("window_id") != window_id:
                         raise Failure(409, "WINDOW_MISMATCH", "The target does not belong to the requested window and privacy context.")
-                if operation not in ("javascript", "list_frames", "cdp", "tab_control", "window_control", "userscript", "webextension"):
+                if operation not in ("javascript", "list_frames", "cdp", "tab_control", "window_control", "userscript", "webextension", "debugging"):
                     raise Failure(400, "UNKNOWN_OPERATION", "Use a documented browser operation.")
+                if operation == "debugging":
+                    if body.get("action") not in ("status", "enable"):
+                        raise Failure(400, "INVALID_ACTION", "Use debugging action status or enable.")
+                    if body.get("action") == "enable" and context == "private" and profile.inventory.get("private_allowed") is not True:
+                        raise Failure(403, "PRIVATE_ACCESS_REQUIRED", "Enable Allow in Incognito / Allow in InPrivate for the selected extension.")
                 if operation == "window_control":
                     if body.get("action") not in ("create", "close"):
                         raise Failure(400, "INVALID_ACTION", "Use window action create or close.")
@@ -326,8 +331,8 @@ def serve(port: int) -> None:
                     if not isinstance(wait, int) or isinstance(wait, bool) or not 0 <= wait <= 15000:
                         raise Failure(400, "INVALID_WAIT", "wait_ms must be 0..15000.")
                     body["action"] = action
-                if operation not in ("tab_control", "window_control") and profile.inventory.get("debugging_enabled") is not True:
-                    raise Failure(409, "DEBUGGING_DISABLED", "Enable debugging in the selected profile's extension controls.")
+                if operation not in ("tab_control", "window_control", "debugging") and profile.inventory.get("debugging_enabled") is not True:
+                    raise Failure(409, "DEBUGGING_DISABLED", "Use debugging action enable with authorized_mutation for the resolved target, or enable debugging in extension controls.")
                 if operation == "javascript":
                     scripts = body.get("scripts")
                     if not isinstance(scripts, list) or not scripts or any(not isinstance(script, str) for script in scripts):
@@ -341,7 +346,7 @@ def serve(port: int) -> None:
                     raise Failure(400, "INVALID_MODE", "Use read_only or authorized_mutation.")
                 if "allow_foreground" in body and not isinstance(body["allow_foreground"], bool):
                     raise Failure(400, "INVALID_FOREGROUND_FLAG", "allow_foreground must be a boolean.")
-                if (operation in ("tab_control", "window_control") or operation == "userscript" and body.get("userscript_action") not in ("list", "list_commands")) and mode != "authorized_mutation":
+                if (operation in ("tab_control", "window_control") or operation == "debugging" and body.get("action") == "enable" or operation == "userscript" and body.get("userscript_action") not in ("list", "list_commands")) and mode != "authorized_mutation":
                     raise Failure(403, "MUTATION_NOT_AUTHORIZED", "This operation requires authorized_mutation.")
                 timeout = body.get("timeout_ms", 30000)
                 if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or not math.isfinite(timeout) or timeout <= 0:

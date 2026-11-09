@@ -53,6 +53,26 @@ For vague descriptions, interpret live metadata against the user's intent, inclu
 
 For "the same window as this page", find the anchor first, then pass its `profile_id`, `context`, `window_id` and `tab_id` to the operation. Chromium `tab_control` with `action: open` creates an inactive tab in that anchor's window.
 
+## Chromium debugging
+
+Once the requested browser is started and its extension has connected, reverse lookup all target conditions. For Edge on Windows, use the guarded startup helper in [Windows operations](windows.md); it returns the new window/tab and resolved profile IDs. Then explicitly enable debugging on an eligible HTTP(S) page, or query status first. Do not use an internal new-tab/settings page as the debugging target.
+
+```js
+import {debugging} from './scripts/node/client.mjs';
+
+const result = await debugging({
+  profile_id: '<resolved-profile-id>', context: 'private',
+  window_id: 456, tab_id: 'chrome-tab:123',
+  action: 'enable', mode: 'authorized_mutation',
+});
+const item = result.results?.[0];
+if (item?.status !== 'exited' || item.value?.attached !== true) {
+  throw new Error(item?.error || result.error || 'Debugging did not connect.');
+}
+```
+
+Python exposes the same operation as `browser_bridge.debugging(profile_id=..., context='normal', tab_id=..., action='enable', mode='authorized_mutation')`. To query without changing the saved switch, use `action='status'` and omit mutation mode. The CLI uses a JSON request with `operation: debugging`; no extra runtime is needed. Saved `enabled` is profile-wide, while actual attachment results respect the explicit context, optional window and optional tab. No client saves a current selection. Inspect status after an interrupted enable before deciding whether another enable call is necessary.
+
 ## Firefox
 
 Use `discover()` for live connection IDs and advertised capabilities. Every `webextension` call supplies its own current `connection_id`, `profile_id` and `context`. Include `window_id` when specified and use that same native `windowId` in native API arguments.

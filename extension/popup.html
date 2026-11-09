@@ -14,7 +14,7 @@
   <body>
     <strong>Browser Bridge</strong>
     <p><label><input id="debuggingEnabled" type="checkbox"> Enable debugging</label></p>
-    <p id="debuggingStatus" role="status">Debugging is off. Page controls are unavailable.</p>
+    <p id="debuggingStatus" role="status">Checking debugging connection…</p>
     <dl>
       <dt>Status</dt><dd id="status">Loading…</dd>
       <dt>Local Bridge</dt><dd id="base">Not configured</dd>
@@ -22,6 +22,7 @@
       <dt>Last error</dt><dd id="error">None</dd>
     </dl>
     <button id="options" type="button">Options</button>
+    <script src="debugging-status.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

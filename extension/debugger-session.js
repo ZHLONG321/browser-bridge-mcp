@@ -31,8 +31,16 @@
       state.attachPromise = Promise.resolve()
         .then(async () => {
           await requireEnabled();
-          await debuggerApi.attach(state.rootSession, protocolVersion);
+          try {
+            await debuggerApi.attach(state.rootSession, protocolVersion);
+          } catch (error) {
+            // A restarted worker can lose its map while Chrome still owns this
+            // extension's attachment. A command succeeds only for our own session.
+            try { await debuggerApi.sendCommand(state.rootSession, "Runtime.getIsolateId"); }
+            catch { throw error; }
+          }
           state.attached = true;
+          options.onStateChanged?.();
           await requireEnabled();
           await debuggerApi.sendCommand(state.rootSession, "Debugger.enable");
         })
@@ -45,6 +53,7 @@
             }
           }
           state.attached = false;
+          options.onStateChanged?.();
           if (sessions.get(tabId) === state) sessions.delete(tabId);
           state.resolveClosed();
           throw error;
@@ -82,6 +91,7 @@
           // A failed attach or already-detached target is already closed from the coordinator's perspective.
         } finally {
           state.attached = false;
+          options.onStateChanged?.();
           if (sessions.get(tabId) === state) sessions.delete(tabId);
           finishCapture(state);
           state.resolveClosed();
@@ -146,6 +156,7 @@
       const state = sessions.get(tabId);
       if (!state) return;
       state.attached = false;
+      options.onStateChanged?.();
       if (state.closing) return;
       if (sessions.get(tabId) === state) sessions.delete(tabId);
       finishCapture(state);
@@ -161,7 +172,14 @@
     async function detachAll() {
       await Promise.all([...sessions.entries()].map(([tabId, state]) => closeState(tabId, state)));
     }
-    return Object.freeze({ acquire, reset, detachAll });
+    async function attachedTabIds() {
+      const targets = await debuggerApi.getTargets();
+      const attached = new Set(targets.filter(target => target.attached).map(target => target.tabId));
+      return [...sessions.entries()]
+        .filter(([tabId, state]) => state.attached && !state.closing && attached.has(tabId))
+        .map(([tabId]) => tabId);
+    }
+    return Object.freeze({ acquire, reset, detachAll, attachedTabIds });
   }
 
   root.LocalBridgeDebuggerSession = Object.freeze({ create });

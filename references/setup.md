@@ -20,7 +20,7 @@ Chrome/Edge use `extension/`; Firefox uses `extension-firefox/`. Both connect to
 
 1. Resolve this skill's `extension/` directory to an existing absolute path first. Open `chrome://extensions` or `edge://extensions`, enable Developer mode, and choose **Load unpacked** using that computed path. On Windows the usual root is `%USERPROFILE%/.agents/skills/browser-bridge`, but expand it before giving the picker input.
 2. Repeat in each intended browser profile. Open extension options and set its service URL. No profile/account labels or default target are stored; every operation supplies its own profile and privacy context.
-3. Enable **Enable debugging** for JS, frame, CDP and userscript operations. Listing connected profiles/tabs works while debugging is off.
+3. JS, frame, CDP and userscript operations need debugging. Either use **Enable debugging** in extension controls or let the agent call the authorized `debugging` enable operation for the resolved target. Listing profiles/tabs and querying debugging status work while debugging is off. The saved switch is separate from actual connections: the UI shows enabled/waiting after a restart until a page connects, and connected counts only for this extension's tracked sessions. No off/on cycle is required for an ordinary restart; page operations attach when needed.
 4. For private windows, explicitly enable **Allow in Incognito / Allow in InPrivate** on the extension's Details page. The extension uses spanning mode and reports each tab/window's privacy state separately.
 5. Run `profiles`, select the appropriate profile, then enumerate its `normal` or `private` tabs. No result means no currently visible connection/window, not proof that the profile or account does not exist.
 

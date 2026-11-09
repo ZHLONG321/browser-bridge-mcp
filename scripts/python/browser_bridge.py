@@ -121,5 +121,15 @@ def window_control(*, profile_id: str, context: str, service_url: str | None = N
     return request("window_control", fields, profile_id=profile_id, context=context, service_url=service_url)
 
 
+def debugging(*, profile_id: str, context: str, service_url: str | None = None, **fields: Json) -> JsonObject:
+    """Read live attachment status or explicitly enable debugging for an exact tab.
+
+    action='enable' needs tab_id and mode='authorized_mutation'; status is read-only.
+    The enabled preference is profile-wide; attached results respect context/window/tab.
+    Check per-item results; a timeout after dispatch requires inspecting status first.
+    """
+    return request("debugging", fields, profile_id=profile_id, context=context, service_url=service_url)
+
+
 def webextension(*, profile_id: str, context: str, service_url: str | None = None, **fields: Json) -> JsonObject:
     return request("webextension", fields, profile_id=profile_id, context=context, service_url=service_url)

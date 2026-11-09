@@ -41,5 +41,6 @@ export const list_frames = fields => request('list_frames', fields);
 export const cdp = fields => request('cdp', fields);
 export const tab_control = fields => request('tab_control', fields);
 export const window_control = fields => request('window_control', fields);
+export const debugging = fields => request('debugging', fields);
 export const userscript = fields => request('userscript', fields);
 export const webextension = fields => request('webextension', fields);

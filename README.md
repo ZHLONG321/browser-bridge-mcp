@@ -25,13 +25,15 @@ Start only one implementation on a port. Use `--port` to select another port and
 
 ## Connect a browser
 
-- **Chrome / Edge:** enable Developer mode in extension management, choose **Load unpacked**, and select this repository's `extension` directory. Enable debugging in extension options for JavaScript, CDP and userscript operations.
+- **Chrome / Edge:** enable Developer mode in extension management, choose **Load unpacked**, and select this repository's `extension` directory. Debugging for JavaScript, CDP and userscripts can be enabled from extension options or by an authorized agent request for the resolved target tab.
 - **Firefox:** open `about:debugging`, choose **This Firefox → Load Temporary Add-on**, and select `extension-firefox/manifest.json`. Enable native browser control in extension options and grant the permissions needed for the requested operations. Temporary add-ons disappear after a browser restart; permanent installation on release Firefox requires Mozilla signing.
 - **Private windows:** explicitly allow the extension in Incognito, InPrivate or Firefox private windows. Normal and private targets remain separate.
 
 Use the actual absolute path in browser file pickers. When supplying installation instructions, compute that path from the checked-out repository or the installed skill location and check that it exists. Windows pickers should receive the expanded path, without an unexpanded environment variable or a guessed username.
 
 Neither extension launches a browser automatically. The guarded Windows Edge helper can launch a fully exited Edge or create a window in an existing process. See [Windows window operations](references/windows.md) for the required `uv` dependency preparation, bundled x64 DLLs and source build commands. Firefox background creation requires an existing connected window and its native HWND.
+
+For an authorized Edge task, the agent can use the guarded helper to start the browser, resolve the target, then call `debugging` with `action: 'enable'` and `mode: 'authorized_mutation'` to establish debugging without manual off/on. First-time installation and private-window access still require user permission. The switch records whether debugging is enabled; the UI separately reports actual connected tabs or an enabled/waiting state. See [debugging control](references/operations.md#chromium-debugging-control).
 
 ## Find and select a target
 

@@ -30,20 +30,44 @@ const userscriptRequests = new Map();
 let debuggingEnabled = false;
 let debuggingSettingRevision = 0;
 let debuggingControlRevision = 0;
+let debuggingSettingsWrite = Promise.resolve();
 const debuggerSettingsReady = chrome.storage.local.get({ debuggingEnabled: false }).then((stored) => {
   if (debuggingSettingRevision === 0) debuggingEnabled = stored.debuggingEnabled === true;
 }).catch(() => { console.warn("Browser Bridge debugging setting unavailable; debugging remains disabled"); });
 
 const debuggerSessions = globalThis.LocalBridgeDebuggerSession.create(chrome.debugger, PROTOCOL_VERSION, {
   isEnabled: async () => { await debuggerSettingsReady; return debuggingEnabled; },
+  onStateChanged: notifyDebuggingStateChanged,
 });
+
+function notifyDebuggingStateChanged() {
+  void chrome.runtime.sendMessage({ type: "debugging_state_changed" }).catch(() => {});
+  notifyTransportTabsChanged();
+}
+
+async function debuggingState() {
+  await debuggerSettingsReady;
+  const attached = await debuggerSessions.attachedTabIds();
+  return { enabled: debuggingEnabled, attached_tab_ids: attached.map(bridgeTabId) };
+}
 
 async function applyDebuggingSetting(enabled) {
   debuggingSettingRevision += 1;
   debuggingEnabled = enabled === true;
   console.info("Browser Bridge debugging", debuggingEnabled ? "enabled" : "disabled");
   if (!debuggingEnabled) await debuggerSessions.detachAll();
-  notifyTransportTabsChanged();
+  notifyDebuggingStateChanged();
+}
+
+function persistDebuggingSetting(enabled, revision) {
+  // Writes can complete after a later off/cancel. Serialize them and discard
+  // superseded requests before they write, so a stale enable cannot win on restart.
+  const write = debuggingSettingsWrite.catch(() => {}).then(async () => {
+    if (revision !== debuggingControlRevision || debuggingEnabled !== enabled) return;
+    await chrome.storage.local.set({ debuggingEnabled: enabled });
+  });
+  debuggingSettingsWrite = write;
+  return write;
 }
 
 async function disableDebuggingFromBanner() {
@@ -51,15 +75,18 @@ async function disableDebuggingFromBanner() {
   // Block immediately, before the storage write or any automatic restore can run.
   await Promise.all([
     applyDebuggingSetting(false),
-    chrome.storage.local.set({ debuggingEnabled: false }),
+    persistDebuggingSetting(false, debuggingControlRevision),
   ]);
 }
 
-async function setDebuggingFromControl(enabled) {
+async function setDebuggingFromControl(enabled, targetTabId) {
   if (typeof enabled !== "boolean") throw new Error("Debugging setting must be a boolean");
-  const revision = ++debuggingControlRevision;
+  // Separate target enables may run concurrently. Explicit UI controls or banner
+  // cancellation supersede them, but enabling another tab does not cancel a job.
+  const revision = targetTabId === undefined ? ++debuggingControlRevision : debuggingControlRevision;
   await debuggerSettingsReady;
   if (revision !== debuggingControlRevision) return { enabled: debuggingEnabled };
+  const wasEnabled = debuggingEnabled;
   if (!enabled) {
     await disableDebuggingFromBanner();
     return { enabled: false };
@@ -67,12 +94,20 @@ async function setDebuggingFromControl(enabled) {
   await applyDebuggingSetting(true);
   try {
     if (revision !== debuggingControlRevision) return { enabled: debuggingEnabled };
-    const selected = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (targetTabId !== undefined) {
+      // Persist the requested preference separately from this tab's connection outcome.
+      await persistDebuggingSetting(true, revision);
+      if (revision !== debuggingControlRevision || !debuggingEnabled) return { enabled: debuggingEnabled };
+    }
     const eligible = tab => Number.isInteger(tab.id) && isDebuggableUrl(tab.url);
-    let target = selected.find(eligible);
-    if (!target) {
-      const tabs = (await chrome.tabs.query({})).filter(eligible);
-      target = tabs[0];
+    let target;
+    if (targetTabId !== undefined) {
+      target = await chrome.tabs.get(targetTabId);
+      if (!eligible(target)) throw new Error("The selected page does not support debugging.");
+    } else {
+      const selected = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      target = selected.find(eligible);
+      if (!target) target = (await chrome.tabs.query({})).find(eligible);
     }
     if (!target) throw new Error("Open a web page before enabling debugging.");
     if (revision !== debuggingControlRevision) return { enabled: debuggingEnabled };
@@ -84,13 +119,14 @@ async function setDebuggingFromControl(enabled) {
       await lease.release();
     }
     if (revision !== debuggingControlRevision || !debuggingEnabled) return { enabled: debuggingEnabled };
-    await chrome.storage.local.set({ debuggingEnabled: true });
+    if (targetTabId === undefined) await persistDebuggingSetting(true, revision);
     return { enabled: true };
   } catch (error) {
     // A manual off/cancel intentionally detaches pending commands. A superseded
     // enable must neither report that cancellation as a failure nor undo a newer setting.
     if (revision !== debuggingControlRevision || !debuggingEnabled) return { enabled: debuggingEnabled };
-    await disableDebuggingFromBanner();
+    // A failed connection to one target must not disable existing authorized sessions.
+    if (!wasEnabled && targetTabId === undefined) await disableDebuggingFromBanner();
     throw error;
   }
 }
@@ -738,6 +774,39 @@ async function resolveDefaultFrameContext(tabId, target, frameId) {
 async function executeJob(job) {
   if (job.profile_id !== await profileIdentity()) throw new Error("Profile selection mismatch");
   if (!["normal", "private"].includes(job.context)) throw new Error("Explicit window privacy context is required");
+  if (job.kind === "debugging") {
+    if (!["status", "enable"].includes(job.action)) throw new Error("Use debugging action status or enable");
+    if (job.window_id !== undefined) {
+      const window = await chrome.windows.get(job.window_id);
+      if (window.incognito !== (job.context === "private")) throw new Error("Window privacy context mismatch");
+    }
+    if (job.tab_id !== undefined) {
+      const tab = await chrome.tabs.get(nativeTabId(job.tab_id));
+      if (tab.incognito !== (job.context === "private")) throw new Error("Window privacy context mismatch");
+      if (job.window_id !== undefined && tab.windowId !== job.window_id) throw new Error("Window selection mismatch");
+    }
+    if (job.action === "enable") {
+      if (job.mode !== "authorized_mutation") throw new Error("Enabling debugging requires authorized mutation");
+      if (job.context === "private" && !await chrome.extension.isAllowedIncognitoAccess()) {
+        throw new Error("Enable Allow in Incognito / Allow in InPrivate for this extension");
+      }
+      await setDebuggingFromControl(true, nativeTabId(job.tab_id));
+    }
+    const state = await debuggingState();
+    const tabs = await chrome.tabs.query({});
+    const visible = new Set(tabs.filter(tab => tab.incognito === (job.context === "private") &&
+      (job.window_id === undefined || tab.windowId === job.window_id) &&
+      (job.tab_id === undefined || bridgeTabId(tab.id) === job.tab_id)).map(tab => bridgeTabId(tab.id)));
+    const attached = state.attached_tab_ids.filter(id => visible.has(id));
+    if (job.action === "enable" && (!state.enabled || !attached.includes(job.tab_id))) {
+      throw new Error("Debugging enable was canceled or the target disconnected; inspect its current status.");
+    }
+    const value = {enabled: state.enabled, attached: attached.length > 0, attached_tab_ids: attached,
+      state: !state.enabled ? "disabled" : attached.length ? "connected" : "waiting",
+      profile_id: job.profile_id, context: job.context, ...(job.window_id === undefined ? {} : {window_id: job.window_id})};
+    return {job_id: job.job_id, tab_id: job.tab_id,
+      results: [{index: 0, status: "exited", value}], frames: [], error: null, events: []};
+  }
   if (job.kind === "window_control") {
     if (job.mode !== "authorized_mutation") throw new Error("Window control requires authorized mutation");
     const incognito = job.context === "private";
@@ -921,7 +990,7 @@ async function resetDebuggerAfterJobTimeout(tabId) {
 async function executeJobWithinDeadline(job, deadlineAt, timeoutMs) {
   const remaining = Math.max(0, deadlineAt - Date.now());
   if (remaining === 0) {
-    if (!["tab_control", "window_control"].includes(job.kind)) await resetDebuggerAfterJobTimeout(nativeTabId(job.tab_id));
+    if (job.tab_id && !["tab_control", "window_control"].includes(job.kind)) await resetDebuggerAfterJobTimeout(nativeTabId(job.tab_id));
     throw new ExtensionJobTimeoutError(timeoutMs);
   }
   let timer = null;
@@ -933,7 +1002,7 @@ async function executeJobWithinDeadline(job, deadlineAt, timeoutMs) {
       }),
     ]);
   } catch (error) {
-    if (error?.name === "ExtensionJobTimeoutError" && !["tab_control", "window_control"].includes(job.kind)) {
+    if (error?.name === "ExtensionJobTimeoutError" && job.tab_id && !["tab_control", "window_control"].includes(job.kind)) {
       await resetDebuggerAfterJobTimeout(nativeTabId(job.tab_id));
     }
     throw error;
@@ -959,7 +1028,7 @@ async function executeJobs(jobs, timeoutMs = EXTENSION_JOB_BATCH_TIMEOUT_MS) {
         ? (job.commands || []).length
         : job.kind === "javascript"
           ? (job.scripts || []).length
-          : ["userscript", "tab_control", "window_control"].includes(job.kind)
+          : ["userscript", "tab_control", "window_control", "debugging"].includes(job.kind)
             ? 1
             : 0;
       completed.push({
@@ -1091,6 +1160,8 @@ async function initializeBridgeRuntime({ forceRecreateOffscreen = false } = {}) 
 
 async function handleMessage(message, sender = null) {
   switch (message?.type) {
+    case "get_debugging_state":
+      return await debuggingState();
     case "set_debugging": {
       if (!sender?.url?.startsWith(chrome.runtime.getURL(""))) {
         throw new Error("Debugging can only be changed from extension controls");
@@ -1173,9 +1244,8 @@ chrome.runtime.onStartup.addListener(() => {
   void initializeBridgeRuntime();
 });
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName === "local" && changes.debuggingEnabled) {
-    void applyDebuggingSetting(changes.debuggingEnabled.newValue).catch(() => { console.warn("Browser Bridge debugging state cleanup failed"); });
-  }
+  // Debugging writes are owned by this worker; replaying their delayed storage
+  // events as new controls could undo a more recent user cancellation.
   if (areaName === "local" && changes.bridgeBaseUrl) {
     void ensureCurrentOffscreenDocument();
     void chrome.runtime.sendMessage({ type: "bridge_config_changed" }).catch(() => {});

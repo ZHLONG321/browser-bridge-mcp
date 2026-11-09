@@ -1,6 +1,8 @@
 "use strict";
 
+let refreshRevision = 0;
 async function refresh() {
+  const revision = ++refreshRevision;
   const state = await chrome.storage.local.get({
     bridgeBaseUrl: "",
     bridgeStatus: "unknown",
@@ -8,14 +10,20 @@ async function refresh() {
     bridgeTabCount: 0,
     debuggingEnabled: false,
   });
+  if (revision !== refreshRevision) return;
   document.getElementById("status").textContent = state.bridgeStatus;
   document.getElementById("base").textContent = state.bridgeBaseUrl || "Not configured";
   document.getElementById("tabs").textContent = String(state.bridgeTabCount || 0);
   document.getElementById("error").textContent = state.bridgeLastError || "None";
   document.getElementById("debuggingEnabled").checked = state.debuggingEnabled === true;
-  document.getElementById("debuggingStatus").textContent = state.debuggingEnabled === true
-    ? "Debugging is on. Browser controls are available."
-    : "Debugging is off. Page controls are unavailable.";
+  try {
+    const debugging = await BrowserBridgeDebuggingStatus.read();
+    if (revision !== refreshRevision) return;
+    document.getElementById("debuggingEnabled").checked = debugging.enabled;
+    document.getElementById("debuggingStatus").textContent = BrowserBridgeDebuggingStatus.text(debugging);
+  } catch (error) {
+    if (revision === refreshRevision) document.getElementById("debuggingStatus").textContent = `Debugging connection status unavailable: ${error.message}`;
+  }
 }
 
 document.getElementById("debuggingEnabled").addEventListener("change", async (event) => {
@@ -37,3 +45,7 @@ document.getElementById("options").addEventListener("click", () => {
 });
 
 void refresh();
+chrome.runtime.onMessage.addListener(message => {
+  if (message?.type === "debugging_state_changed") void refresh();
+});
+setInterval(() => { void refresh(); }, 2000);
