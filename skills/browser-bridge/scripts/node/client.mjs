@@ -44,3 +44,6 @@ export const window_control = fields => request('window_control', fields);
 export const debugging = fields => request('debugging', fields);
 export const userscript = fields => request('userscript', fields);
 export const webextension = fields => request('webextension', fields);
+
+// Keep the core transport dependency-free; file screenshots load on demand.
+export const screenshot = async fields => (await import('./screenshots.mjs')).screenshot(fields);

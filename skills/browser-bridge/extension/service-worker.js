@@ -932,7 +932,9 @@ async function executeJob(job) {
             ? { tabId, sessionId: command.session_id }
             : rootSession;
           const value = await chrome.debugger.sendCommand(target, command.method, command.params || {});
-          results.push({ index, status: "exited", value: boundedJsonValue(value) });
+          // Encoded screenshot bytes must arrive intact, including large pages.
+          // Other CDP results retain the normal text-result bound.
+          results.push({ index, status: "exited", value: command.method === "Page.captureScreenshot" ? value : boundedJsonValue(value) });
         } catch (error) {
           results.push({ index, status: "failed", error: errorText(error) });
         }

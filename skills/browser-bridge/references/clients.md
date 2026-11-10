@@ -33,6 +33,25 @@ console.log(await javascript({
 
 Use ordinary JavaScript and `Promise.all` for independent operations. Every function takes an options object with snake_case browser fields. The optional `service_url` defaults to `BROWSER_BRIDGE_URL` or `http://127.0.0.1:30003`. The `url` field in a browser operation remains the page URL, including tab creation/navigation.
 
+The Node client also exports `screenshot`. In a saved script, pass the already-resolved target and the active caller session ID:
+
+```js
+import {screenshot} from '<skill>/scripts/node/client.mjs';
+import {screenshotDirectory} from '<skill>/scripts/node/screenshots.mjs';
+import {join} from 'node:path';
+
+const filename = await screenshot({
+  ...resolvedTarget, session_id: callerSessionId, scope: 'rect',
+  rect: {x: 0, y: 0, width: 50, height: 100, reference: 'viewport', unit: 'percent'},
+  padding: 16,
+});
+console.log(filename);
+// For a later local image-viewing call:
+const imagePath = join(screenshotDirectory(callerSessionId), filename);
+```
+
+Resolve `resolvedTarget` and `callerSessionId` before this call; Firefox requires its live `connection_id` too. The helper verifies a complete nonempty file before returning its filename. Encoding preserves native dimensions; saved byte sizes go to stderr. See [Screenshots](screenshots.md) for full-page, viewport and element scopes, format compatibility and AI-controlled scrolling. Python retains its native CDP/WebExtension calls; this file-producing helper is a Node export.
+
 ## Python
 
 Add `<skill>/scripts/python` to `sys.path`, then:

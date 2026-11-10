@@ -36,6 +36,20 @@ const rdpDiscoveryFields = {
   after: integer.min(0).optional(), wait_ms: wait,
 };
 const rdpSelection = {connection_id: z.string().min(1)};
+const screenshotFields = {
+  ...selection, tab_id: tab,
+  connection_id: z.string().min(1).optional().describe('Required for Firefox: the current live extension connection ID.'),
+  session_id: z.string().regex(/^[A-Za-z0-9_-]+$/).describe('Current caller session ID; used in the screenshot directory. Never use the MCP server process/session ID.'),
+  format: z.enum(['webp', 'jpeg']).optional().describe('Defaults to WebP; use JPEG when the client cannot read WebP.'),
+  quality: integer.min(0).max(100).optional().describe('Encoder quality; defaults to 100 for WebP and 90 for JPEG. No size-based degradation or automatic resizing.'),
+  padding: z.number().nonnegative().optional().describe('Extra surrounding CSS pixels on every side, clipped at document edges.'),
+  timeout_ms: z.number().positive().optional(),
+};
+const screenshotRect = z.strictObject({
+  x: z.number(), y: z.number(), width: z.number().positive(), height: z.number().positive(),
+  reference: z.enum(['page', 'viewport']).optional().describe('Coordinate origin/reference extent; defaults to page.'),
+  unit: z.enum(['css_px', 'percent', 'ratio']).optional().describe('Defaults to CSS pixels. Percent uses 0..100; ratio uses 0..1 of the reference extent.'),
+});
 
 async function probe() {
   const value = await bridge.http('/probe', {timeoutMs: 3000});
@@ -70,15 +84,16 @@ function failed(value) {
 }
 
 function result(value, isError = failed(value)) {
+  if (typeof value === 'string') return {content: [{type: 'text', text: value}], isError};
   return {content: [{type: 'text', text: JSON.stringify(value)}], structuredContent: value, isError};
 }
 
 export function registerTools(server) {
-  function tool(name, description, fields, handler, readOnly = false) {
+  function tool(name, description, fields, handler, readOnly = false, fileOutput = false) {
     server.registerTool(name, {
       description,
       inputSchema: z.strictObject(fields),
-      annotations: {readOnlyHint: readOnly, destructiveHint: !readOnly, idempotentHint: readOnly, openWorldHint: true},
+      annotations: {readOnlyHint: readOnly, destructiveHint: !readOnly && !fileOutput, idempotentHint: readOnly, openWorldHint: true},
     }, async args => {
       try {
         return result(await handler(args));
@@ -109,6 +124,18 @@ export function registerTools(server) {
     query: z.string().optional(),
   }, bridge.find_tabs, true);
   tool('browser_tab_list', 'List tabs in one explicit profile and normal/private context, optionally within one resolved window.', selection, bridge.tabs, true);
+
+  const screenshotDescription = 'Captures once without scrolling, focusing, searching or waiting for application readiness. Saves a compressed image at %TMP%/codex-<session_id>-browser-bridge/screen/ and returns ONLY its filename after confirming the complete file exists. Preserves native pixel dimensions; no file-size cap or automatic quality reduction. Use the exact directory plus filename with the client image-viewing tool. Firefox requires a live connection_id, native control and site permissions.';
+  tool('browser_screenshot_full_page', `Capture the top document\'s full scrollable page extent. Nested scrolling containers retain their current visible contents; lazy loading and container scrolling belong to an AI-written script. ${screenshotDescription}`, screenshotFields,
+    args => bridge.screenshot({...args, scope: 'full_page'}), false, true);
+  tool('browser_screenshot_viewport', `Capture the current visible page viewport at its current scroll position. ${screenshotDescription}`, screenshotFields,
+    args => bridge.screenshot({...args, scope: 'viewport'}), false, true);
+  tool('browser_screenshot_element', `Capture an already-resolved element rectangle, optionally including surrounding padding. The caller supplies its current bounds in the top document\'s coordinate system; this tool performs no element lookup or search. Hidden overflow is not expanded. ${screenshotDescription}`, {
+    ...screenshotFields, element_rect: screenshotRect,
+  }, args => bridge.screenshot({...args, scope: 'element'}), false, true);
+  tool('browser_screenshot_rect', `Capture the supplied rectangle in the top document. Coordinates may be CSS pixels, percentages or ratios relative to the page or current viewport. ${screenshotDescription}`, {
+    ...screenshotFields, rect: screenshotRect,
+  }, args => bridge.screenshot({...args, scope: 'rect'}), false, true);
 
   tool('chromium_javascript_execute', 'Run Chromium page scripts on an exact tab, optionally in one frame. Scripts may change the page even with read_only mode; honor task authorization and never activate it without permission.', {
     ...tabFields,

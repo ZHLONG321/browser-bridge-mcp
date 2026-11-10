@@ -42,7 +42,7 @@ Example background tab creation, anchored in the selected tab's window:
 {"operation":"tab_control","tab_id":"chrome-tab:123","action":"open","url":"https://example.com/","mode":"authorized_mutation"}
 ```
 
-Results carry `job_id`, `tab_id`, per-item `results` with `status`, `frames`, and collected `events`. An item may fail even if HTTP succeeds; check every requested item. Existing extension result/event capture bounds may return `type: result_truncated` plus a preview; narrow the page query or retrieve the required content in parts instead of assuming the preview is complete.
+Results carry `job_id`, `tab_id`, per-item `results` with `status`, `frames`, and collected `events`. An item may fail even if HTTP succeeds; check every requested item. Existing extension result/event capture bounds may return `type: result_truncated` plus a preview; narrow the page query or retrieve the required content in parts instead of assuming the preview is complete. Chromium extension 1.0.5+ exempts `Page.captureScreenshot` image results from the ordinary text-result bound so image bytes arrive intact. Prefer the [file-producing screenshot helper/tools](screenshots.md) when taking screenshots; their successful response is only the verified filename.
 
 Expected HTTP errors: 400 malformed request/unsupported operation, 403 forbidden origin, missing authorization/private permission or foreground operation, 404 profile/tab absent, 409 debugging disabled/context mismatch/extension restart, 504 deadline exceeded with `outcome_unknown` after dispatch. Connection loss is not an instruction to repeat a write.
 

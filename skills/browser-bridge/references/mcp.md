@@ -51,7 +51,7 @@ By default both layers use `http://127.0.0.1:30003`. For a different existing Br
 
 ## Tools
 
-MCP tool API 2.0 exposes 37 tools named by resource and action. It replaces the previous names and combined action tools. Reconnect the MCP client after updating the installed skill to discover the new tool list; no extension reload or HTTP service restart is needed for this change. Existing CLI commands, importable client functions and HTTP actions keep their names.
+MCP tool API 2.1 exposes 41 tools named by resource and action. It replaces the previous names and combined action tools. Reconnect the MCP client after updating the installed skill to discover the new tool list. Screenshot image transport requires Chromium extension 1.0.5+; reload an older unpacked extension. No HTTP service restart is needed. Existing CLI commands, importable client functions and HTTP actions keep their names.
 
 Each fixed action has its own input schema. Do not send `action` or `userscript_action`: the adapter supplies the fixed HTTP action. Only action-relevant fields are accepted. Chromium tab/window changes, debugging enable and userscript changes require `mode: authorized_mutation`; foreground tab activation also requires `allow_foreground: true`. Arbitrary JavaScript, CDP and Firefox APIs/packets remain native capabilities whose effects must respect task authorization.
 
@@ -60,6 +60,8 @@ Each fixed action has its own input schema. Do not send `action` or `userscript_
 | `bridge_service_status`, `bridge_service_start` | Inspect or explicitly start/reuse the HTTP service |
 | `browser_profile_list`, `browser_connection_list` | List extension profiles or existing extension/RDP connections |
 | `browser_tab_find`, `browser_tab_list` | Reverse lookup target metadata or list one explicit profile/privacy/window |
+| `browser_screenshot_full_page`, `browser_screenshot_viewport` | Capture the full top document or current viewport to a compressed image file |
+| `browser_screenshot_element`, `browser_screenshot_rect` | Capture caller-resolved element bounds or an explicit rectangle, with optional padding |
 | `chromium_javascript_execute`, `chromium_frame_list`, `chromium_cdp_execute` | Chromium page execution, frame discovery and native CDP |
 | `chromium_tab_open` | Open an inactive tab in the existing anchor `tab_id`'s window; requires `url` |
 | `chromium_tab_navigate` | Navigate the resolved `tab_id`; requires `url` |
@@ -80,6 +82,6 @@ Each fixed action has its own input schema. Do not send `action` or `userscript_
 
 Request fields retain the [operation contracts](operations.md), with fixed actions and their required fields expressed in each MCP schema. Firefox API tools require explicit profile/context and live extension `connection_id` each time. RDP deliberately has no automatic extension profile/privacy association; establish it from native metadata as described in [RDP](rdp.md). For guarded Windows tools, prepare the dependencies and native DLLs in [Windows operations](windows.md); exposing a tool does not remove those prerequisites. Close task-created temporary pages as soon as they are no longer needed unless the user explicitly authorizes keeping them open.
 
-Results include the complete Bridge JSON in both text and `structuredContent`. Service errors and failed Bridge items set `isError`; original error details, job IDs and `outcome_unknown` are preserved when supplied. Inspect nested native API/actor results as well: a delivered packet is not proof its operation succeeded. Timeouts, cancellation and lost responses never authorize automatic mutation replay. MCP tool annotations describe intent; they do not sandbox JavaScript, CDP, privileged Firefox functions or raw packets.
+Browser operation results include the complete Bridge JSON in both text and `structuredContent`. Successful screenshot tools return only the saved filename as text, after verifying that its complete nonempty file exists. Pass the caller's `session_id`, reconstruct its session screenshot directory and view the file locally; see [Screenshots](screenshots.md) for areas, coordinates, encoding and scrolling guidance. Service errors and failed Bridge items set `isError`; original error details, job IDs and `outcome_unknown` are preserved when supplied. Inspect nested native API/actor results as well: a delivered packet is not proof its operation succeeded. Timeouts, cancellation and lost responses never authorize automatic mutation replay. MCP tool annotations describe intent; they do not sandbox JavaScript, CDP, privileged Firefox functions or raw packets.
 
 Sources: [Official MCP SDK and stdio setup](https://ts.sdk.modelcontextprotocol.io/v2/get-started/first-server), [MCP tool results](https://modelcontextprotocol.io/specification/2025-11-25/server/tools). The Codex command above follows `codex mcp add --help`; other clients use their own MCP configuration format.
