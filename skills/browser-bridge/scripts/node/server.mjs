@@ -138,6 +138,8 @@ if (!options.serve) {
         else return send(response, 200, inventory());
       }
       if (url.pathname === '/shutdown') {
+        // Flush the acknowledgement before closing active extension long polls.
+        response.once('finish', () => server.closeAllConnections());
         send(response, 200, {stopping: true});
         for (const profile of profiles.values()) profile.waiter?.();
         for (const entry of pending.values()) entry.reject(new Failure(409, 'SERVER_STOPPING', 'Service stopping; inspect dispatched work before repeating it.', {outcome_unknown: entry.dispatched}));

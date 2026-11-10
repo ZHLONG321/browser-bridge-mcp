@@ -16,6 +16,19 @@ scripts\browser-bridge.bat stop
 
 The client BAT requires curl with `--fail-with-body` support (7.76+). Windows 10/11 generally supplies curl. If unavailable, tell the user to install/update it from [curl for Windows](https://curl.se/windows/) and expose `curl.exe` on PATH. Do not bundle executables or download them automatically.
 
+## Connection recovery
+
+The HTTP service is shared by clients and Codex sessions. Reuse a compatible running service; a new session does not need a fresh service or a browser/extension restart. Stopping it interrupts other callers. Server updates require one coordinated restart, not a restart on every client connection.
+
+If discovery is empty or a call reports `PROFILE_NOT_CONNECTED`:
+
+1. Check `bridge_status` or the CLI `status`. If the service is unavailable, start it with `bridge_start_service` or the documented launcher, then discover again. Do not kill or replace a service already using the port.
+2. Allow automatic extension reconnection before requesting user intervention. Repeat read-only `profiles`/`discover` roughly every two seconds for up to 30 seconds; stop as soon as the required connection appears. This covers the worker's 20-second HTTP timeout, retry delay and inventory exchange. One empty response establishes only the current observation. A connected profile with no matching page is a target lookup problem, not a disconnected extension.
+3. Resolve the original browser/profile/privacy/window conditions against the fresh inventory. Re-enumerate after a disconnect; never substitute another profile. Do not replay an operation that was already dispatched or has an unknown outcome; inspect its target first.
+4. If still disconnected, inspect running browser processes and report the actual service error and available connections. Ask for the specific missing setup or permission only when needed. Reload is appropriate for a newly installed extension version or a persistent extension failure, not as the first response to an empty inventory. Debugging being off does not prevent inventory connections; an enabled preference without a debugger attachment is also separate from transport health.
+
+Both extensions reconnect automatically after the local service returns. Chromium also discards an expired service secret when a snapshot receives `INVALID_SECRET`, even if an earlier long poll still succeeds. This re-establishes transport only; it does not repeat browser actions. Node service shutdown closes active HTTP long polls after sending its acknowledgement so they cannot remain attached to a retired process. See [Node HTTP shutdown](https://nodejs.org/api/http.html#servercloseallconnections).
+
 ## Extension
 
 Chrome/Edge use `extension/`; Firefox uses `extension-firefox/`. Both connect to either server runtime through the same loopback HTTP service. Neither discovers browser executable paths or starts a browser. Copy the whole skill directory to another computer, install an available runtime/curl as needed, then load the appropriate extension in each intended profile; no workstation path is embedded in the package.

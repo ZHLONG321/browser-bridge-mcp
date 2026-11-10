@@ -40,7 +40,7 @@ async function http(path, {base, secret}, body, timeoutMs = 20000) {
     cache: 'no-store', signal: AbortSignal.timeout(timeoutMs),
   });
   const value = await response.json();
-  if (!response.ok) throw new Error(value.message || `HTTP ${response.status}`);
+  if (!response.ok) throw Object.assign(new Error(value.message || `HTTP ${response.status}`), {status: response.status, code: value.code});
   return value;
 }
 
@@ -52,17 +52,23 @@ async function publish() {
   if (!current) return;
   if (publishing) { publishAgain = true; return; }
   publishing = true;
+  let connection;
   try {
     do {
       publishAgain = false;
-      const connection = current;
+      connection = current;
       if (!connection) break;
       const inventory = await snapshot();
       await http('/extension/snapshot', connection, inventory);
-      await setStatus('connected', '', inventory.tabs.length);
+      if (current === connection) await setStatus('connected', '', inventory.tabs.length);
     } while (publishAgain);
-  } catch {
-    // The polling loop reports connection failures and reconnects; do not replay jobs here.
+  } catch (error) {
+    // A restarted service can reject snapshots while an old poll still succeeds.
+    // Re-bootstrap on the next poll; leave dispatched jobs and their results intact.
+    if (error.status === 401 && error.code === 'INVALID_SECRET' && current === connection) {
+      current = null;
+      await setStatus('disconnected', error.message);
+    }
   } finally { publishing = false; }
 }
 
@@ -85,7 +91,7 @@ async function run() {
       const inventory = await snapshot();
       const response = await http('/extension/poll', connection, {...inventory, results: [...completed.values()]});
       for (const id of response.acknowledged || []) completed.delete(id);
-      await setStatus('connected', '', inventory.tabs.length);
+      if (current === connection) await setStatus('connected', '', inventory.tabs.length);
       for (const job of response.jobs || []) {
         if (completed.has(job.job_id)) continue;
         const remaining = Math.max(1, job.deadline_at - Date.now());
