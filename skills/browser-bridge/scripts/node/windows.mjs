@@ -99,6 +99,53 @@ export async function edge_defaults() {
   return pythonJson('edge_info.py');
 }
 
+// Inspect only a task-resolved physical profile; disconnected profiles are not installation requests.
+export async function edge_profile_extension_status({user_data_dir, profile_directory, context}) {
+  if (process.platform !== 'win32') throw new Error('Edge profile inspection requires Windows.');
+  if (!['normal', 'private'].includes(context)) throw new Error('Explicit normal/private context is required.');
+  if (typeof user_data_dir !== 'string' || !user_data_dir) throw new Error('Resolve the Edge user-data directory first.');
+  if (typeof profile_directory !== 'string' || !profile_directory || profile_directory === '.' || profile_directory === '..' || /[\\/]/.test(profile_directory)) throw new Error('Supply one existing physical profile directory name.');
+  const root = resolve(user_data_dir);
+  const state = JSON.parse(await readFile(join(root, 'Local State'), 'utf8'));
+  if (!Object.hasOwn(state.profile?.info_cache ?? {}, profile_directory)) throw new Error('The selected profile is not registered in Edge Local State.');
+  const profilePath = join(root, profile_directory);
+  if (!(await stat(profilePath)).isDirectory()) throw new Error('The selected physical profile directory does not exist.');
+  const extensionPath = fileURLToPath(new URL('../../extension', import.meta.url));
+  if (!(await stat(extensionPath)).isDirectory()) throw new Error('This skill extension directory does not exist.');
+  const source = join(profilePath, 'Secure Preferences');
+  const preferences = JSON.parse(await readFile(source, 'utf8'));
+  const settings = preferences.extensions?.settings;
+  const value = {
+    profile_directory, profile_name: state.profile.info_cache[profile_directory].name ?? null,
+    context, extension_path: extensionPath, source, evidence: 'saved_preferences',
+    connection_state: 'not_checked',
+  };
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
+    return {...value, registration: 'unknown', private_allowed: null,
+      guidance: 'The saved extension registry is unavailable. Do not infer that installation is missing.'};
+  }
+  const entries = Object.entries(settings);
+  if (entries.some(([, item]) => !item || typeof item !== 'object' || Array.isArray(item))) {
+    return {...value, registration: 'unknown', private_allowed: null,
+      guidance: 'The saved extension registry contains unreadable entries. Do not infer that installation is missing.'};
+  }
+  const installed = entries.filter(([, item]) => typeof item?.path === 'string' &&
+    resolve(profilePath, 'Extensions', item.path).toLowerCase() === resolve(extensionPath).toLowerCase());
+  if (installed.length === 1) {
+    const [extension_id, item] = installed[0];
+    return {...value, registration: 'present', extension_id,
+      private_allowed: typeof item.incognito === 'boolean' ? item.incognito : null,
+      guidance: 'Registration is present; it does not prove a live or enabled extension. Check live connections and recovery; do not request reinstallation. For private tasks, check the selected profile permission separately.'};
+  }
+  // Another copy/name match must not trigger a duplicate installation request.
+  if (installed.length > 1 || entries.some(([, item]) => item?.manifest?.name === 'Browser Bridge')) {
+    return {...value, registration: 'unknown', private_allowed: null,
+      guidance: 'Several registrations or another Browser Bridge copy may exist. Confirm the selected profile extension before requesting installation.'};
+  }
+  return {...value, registration: 'not_found', private_allowed: null,
+    guidance: 'No registration for this skill extension was found in the saved registry. Only if this is the task-required profile, ask the user to load extension_path in that profile. Other profiles need no installation. Saved preferences may lag live browser state.'};
+}
+
 // Physical profile selection is explicit here; no default/current target is saved.
 export async function create_edge_window({executable, user_data_dir, profile_directory,
   context, url, service_url = defaultUrl()}) {

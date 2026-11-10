@@ -3,6 +3,7 @@
 Use the user's URL, already-open page, browser/profile/window or account context as the selection reference. Before treating a 401/403, sign-in page, missing data or another unexpected error as an access/service limitation:
 
 - Match the live connection, browser family, profile, normal/private window and exact tab. Check its current URL, redirects, title and relevant visible content. The first tab on the same domain may be a different target.
+- Bridge search covers connected profiles only. If candidates do not establish the intended target, or the user says the page is wrong, an observed password/sign-in page cannot establish that the user's target needs credentials. Resolve the task-required profile from available evidence or ask for the remaining distinction. Follow [Task-required profile setup](setup.md#task-required-profile-setup) for that profile only; other profiles need no installation.
 - Check that specific page's login, sign-in redirects and visible account. When identity changes the result, compare the account display with a successful authenticated read in the same page session. Do not print credentials, cookies or tokens.
 - For a page API request, verify the endpoint and authentication method against the page implementation or observed requests. Compare the failure with an ordinary successful authenticated request in the same session. A guessed endpoint's error or another profile's response cannot establish that the requested data is unavailable.
 

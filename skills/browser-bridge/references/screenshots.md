@@ -1,5 +1,11 @@
 # Screenshots and scrolling
 
+## When to capture and inspect
+
+Use screenshots proactively for questions about rendered appearance and during authorized troubleshooting of unexpected visible states. Useful cases include missing content, blank panels, loading indicators, error banners, disabled controls, overlays, clipping and differences from the user's screenshot. Capture the relevant current state before another authorized action changes it, then open the saved image with the client's image-viewing tool. A filename or successful capture alone does not establish what the image shows.
+
+Start with the scope that explains the issue: a viewport for context, an element/rectangle with padding for a local defect, or the full document for overall layout. Combine the visual evidence with DOM/computed styles, console errors and relevant network observations under [DevTools guidance](operations.md#devtools-and-network-observation). Resolve targets through discovery and DOM inspection first; screenshot capture itself performs no search. Screenshots and diagnostics remain within the task's existing inspection, mutation and testing authorization.
+
 ## Capture an already-resolved target
 
 Resolve browser, profile, privacy context, window, tab, elements and frames before taking a screenshot. Screenshot tools do not search for targets, accept vague descriptions, scroll elements into view, expand hidden overflow, or decide whether application content is ready. Keep selection explicit on every call.

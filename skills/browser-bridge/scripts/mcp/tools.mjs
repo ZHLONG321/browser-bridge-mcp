@@ -3,7 +3,7 @@ import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {fileURLToPath} from 'node:url';
 import * as bridge from '../node/client.mjs';
-import {edge_defaults, create_edge_window, create_firefox_window} from '../node/windows.mjs';
+import {edge_defaults, edge_profile_extension_status, create_edge_window, create_firefox_window} from '../node/windows.mjs';
 
 const execFileAsync = promisify(execFile);
 const integer = z.number().int().safe();
@@ -122,9 +122,9 @@ export function registerTools(server) {
 
   tool('bridge_service_status', 'Inspect the configured local HTTP service without starting it or opening a browser.', {}, probe, true);
   tool('bridge_service_start', 'Start the bundled Node HTTP service without a console window, or reuse a compatible running service. Opens no browser. The shared service outlives this MCP process; it is not stopped when a client disconnects. If the port is occupied or startup is uncertain, inspect the returned error/log before retrying.', {}, startService);
-  tool('browser_profile_list', 'List connected extension profiles, browser family, private-access state and windows. Does not select a profile. Chromium family alone does not distinguish Edge from Chrome; use process identity or candidate page metadata.', {}, bridge.profiles, true);
-  tool('browser_connection_list', 'List existing extension and Firefox RDP connections without opening a native connection, requesting permissions or selecting a profile.', {}, bridge.discover, true);
-  tool('browser_tab_find', 'Reverse lookup all supplied URL, title, account, privacy, window and profile conditions against live tab metadata. match fields compare exactly; query is a case-insensitive substring, not semantic search. For vague descriptions broaden the query and interpret candidates. Never select the first ambiguous match.', {
+  tool('browser_profile_list', 'List connected extension profiles, browser family, private-access state and windows. Does not enumerate disconnected profiles or prove installation is absent. Only the task-required profile may need setup; unrelated profiles need no installation. Chromium family alone does not distinguish Edge from Chrome; use process identity or candidate page metadata.', {}, bridge.profiles, true);
+  tool('browser_connection_list', 'List existing extension and Firefox RDP connections without opening a native connection, requesting permissions or selecting a profile. Missing connections do not prove missing installation. Resolve the task-required profile before asking for setup; unrelated profiles need no installation.', {}, bridge.discover, true);
+  tool('browser_tab_find', 'Reverse lookup all supplied URL, title, account, privacy, window and profile conditions against CONNECTED profiles only. An absent or unsuitable match does not establish the target is absent from disconnected profiles. Resolve the intended profile before asking for installation; do not require unrelated profiles to install. match fields compare exactly; query is a case-insensitive substring, not semantic search. For vague descriptions broaden the query and interpret candidates. Never select the first ambiguous match.', {
     match: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
     query: z.string().optional(),
   }, bridge.find_tabs, true);
@@ -253,7 +253,10 @@ export function registerTools(server) {
   tool('firefox_rdp_disconnect', 'Disconnect the exact Firefox RDP connection. Does not close the browser or its tabs.', rdpSelection,
     args => bridge.rdp({...args, action: 'disconnect'}));
 
-  tool('edge_startup_profile_get', 'Read Windows Edge installation and its current startup profile selection. Opens no browser. Use this for a new task only after reverse lookup of all supplied existing-target conditions; do not assume the physical profile is Default.', {}, edge_defaults, true);
+  tool('edge_startup_profile_get', 'Read Windows Edge installation, registered physical profile names and current startup profile selection. Opens no browser. Registered profiles are not proof of running windows or page locations. Use the startup default only for a new task after reverse lookup of all supplied existing-target conditions; do not assume the physical profile is Default. Unrelated profiles need no extension installation.', {}, edge_defaults, true);
+  tool('edge_profile_extension_status', 'Read saved Browser Bridge extension registration for ONE Windows Edge physical profile already resolved as necessary for the user task. Supply its user-data directory, physical profile directory and privacy context. Does not launch browsers, inspect page contents, install extensions or check live connection state. not_found is saved-registry evidence, not proof of current browser state; unknown/errors never establish missing installation. present calls for connection recovery or private-permission checks, not reinstallation. Never scan unrelated profiles to request installation.', {
+    user_data_dir: z.string().min(1), profile_directory: z.string().min(1), context,
+  }, edge_profile_extension_status, true);
   tool('edge_window_create_background', 'Create an ordinary or InPrivate Edge window in the background on Windows, including fully exited Edge. Requires task authorization, the guarded helper prerequisites and this installed skill\'s extension in the physical profile. Never minimize or take focus. Pass the freshly resolved executable/user-data/profile explicitly. Close task-created temporary pages when finished unless the user authorizes keeping them open.', {
     executable: z.string().min(1), user_data_dir: z.string().min(1), profile_directory: z.string().min(1),
     context, url: z.string().optional(),

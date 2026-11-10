@@ -42,7 +42,7 @@ Resolve both placeholders before writing settings. On Windows, use JSON escaping
 ## Connect the HTTP service and browser
 
 1. Call `bridge_service_status` to inspect the service. If no listener exists, call `bridge_service_start`. It starts the bundled Node service without a console window or reuses a compatible existing Bridge. It never replaces another listener, launches a browser or grants extension permissions. Startup errors include the launcher output/log when available; inspect uncertain startup before trying again.
-2. Load the appropriate browser extension and grant the permissions described in [Setup](setup.md). Compute its absolute picker path from this installed skill. First-time extension loading and private-window permission remain user actions.
+2. Check the extension and required permissions for the task-required profile under [Task-required profile setup](setup.md#task-required-profile-setup). Ask for loading only if needed there; other profiles need no installation. Compute its absolute picker path from this installed skill. First-time extension loading and private-window permission remain user actions.
 3. Call `browser_profile_list`, `browser_connection_list` or `browser_tab_find` to resolve the task's target. Pass profile, privacy and relevant window constraints on each operation. There is no current profile or client-bound browser.
 
 The HTTP service is shared with other MCP clients, the CLI and extensions. It continues running when an MCP client exits. Stop it only through the existing service shutdown operation when authorized; MCP disconnect does not stop a service another client may be using. Startup logs use the HTTP launcher's existing session log path, returned by `bridge_service_start`.
@@ -51,7 +51,7 @@ By default both layers use `http://127.0.0.1:30003`. For a different existing Br
 
 ## Tools
 
-MCP tool API 2.3 exposes 46 tools named by resource and action, including `browser_job_status`. Reconnect the MCP client after updating the installed skill to discover the tool list. Service and extension prerequisites are maintained in [Setup](setup.md#connection-recovery). Existing CLI commands, importable client functions and HTTP actions keep their names.
+MCP tool API 2.3 exposes 47 tools named by resource and action, including `browser_job_status` and the read-only `edge_profile_extension_status`. Reconnect the MCP client after updating the installed skill to discover the tool list. Service and extension prerequisites are maintained in [Setup](setup.md#connection-recovery). Existing CLI commands, importable client functions and HTTP actions keep their names.
 
 Each fixed action has its own input schema. Do not send `action` or `userscript_action`: the adapter supplies the fixed HTTP action. Only action-relevant fields are accepted. Chromium tab/window changes, debugging enable and userscript changes require `mode: authorized_mutation`; foreground tab activation also requires `allow_foreground: true`. Arbitrary JavaScript, CDP and Firefox APIs/packets remain native capabilities whose effects must respect task authorization.
 
@@ -79,7 +79,8 @@ Each fixed action has its own input schema. Do not send `action` or `userscript_
 | `firefox_api_events_read`, `firefox_api_handle_release` | Read events after a cursor or release a native `path: handles.<id>` |
 | `firefox_rdp_connect`, `firefox_rdp_discover` | Connect/reuse a loopback `rdp_port`, or inspect an existing `connection_id`/actor/scope |
 | `firefox_rdp_exchange`, `firefox_rdp_packets_read`, `firefox_rdp_disconnect` | Send native packets/bulk, read retained packets without sending, or disconnect an existing connection |
-| `edge_startup_profile_get` | Read Windows Edge's current installation/startup profile selection |
+| `edge_startup_profile_get` | Read Windows Edge's installation, registered physical profile names and current startup selection; this does not establish running windows |
+| `edge_profile_extension_status` | Read saved extension registration for one task-required Windows Edge physical profile and explicit privacy context; no launch, installation or live-connection claim |
 | `edge_window_create_background` | Guarded background Edge creation, including complete browser exit |
 | `firefox_window_create_background` | Guarded background Firefox creation using an existing live native window |
 
