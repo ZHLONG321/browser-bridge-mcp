@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import os
-from http.client import HTTPResponse
+import uuid
+from http.client import HTTPException, HTTPResponse
 from typing import TypeAlias, cast
 from urllib.error import HTTPError
 from urllib.parse import urlencode, urlsplit
@@ -53,6 +54,12 @@ def profiles(*, service_url: str | None = None) -> JsonObject:
 
 def discover(*, service_url: str | None = None, **fields: Json) -> JsonObject:
     """List connections, describe a selected extension, or explicitly connect to RDP."""
+    connection_id = fields.get("connection_id")
+    if isinstance(connection_id, str) and connection_id.startswith("browser-extension:"):
+        profile_id, context = fields.pop("profile_id", None), fields.pop("context", None)
+        if not isinstance(profile_id, str) or not isinstance(context, str):
+            raise ValueError("Explicit profile_id and normal/private context are required.")
+        return request("webextension", {**fields, "action": "describe", "path": fields.get("namespace", "")}, profile_id=profile_id, context=context, service_url=service_url)
     return http("/discover", url=service_url, payload=fields, timeout=_native_timeout(fields))
 
 
@@ -91,10 +98,54 @@ def request(operation: str, payload: JsonObject | None = None, *, profile_id: st
     """Dispatch once to the profile/context supplied on this call; retain no selection."""
     query = _selection_query(profile_id, context)
     body: JsonObject = {**(payload or {}), "operation": operation}
+    job_id = body.setdefault("job_id", str(uuid.uuid4()))
     timeout = body.get("timeout_ms", 30000)
     if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
         raise ValueError("timeout_ms must be positive.")
-    return http("/request?" + query, url=service_url, payload=body, timeout=timeout / 1000 + 5)
+    try:
+        result = http("/request?" + query, url=service_url, payload=body, timeout=timeout / 1000 + 5)
+        receipt: JsonObject = {"profile_id": profile_id, "context": context, "job_id": job_id, "receipt_id": result.get("receipt_id")}
+        for key in ("tab_id", "window_id"):
+            if key in body:
+                receipt[key] = body[key]
+        _acknowledge(receipt, service_url)
+        return result
+    except BridgeError as error:
+        _ = error.details.setdefault("job_id", job_id)
+        if error.status >= 500:
+            _ = error.details.setdefault("outcome_unknown", True)
+        if error.details.get("terminal") is True:
+            receipt = {"profile_id": profile_id, "context": context, "job_id": job_id, "receipt_id": error.details.get("receipt_id")}
+            for key in ("tab_id", "window_id"):
+                if key in body:
+                    receipt[key] = body[key]
+            _acknowledge(receipt, service_url)
+        raise
+    except (OSError, ValueError, HTTPException) as error:
+        raise BridgeError(503, {"code": "TRANSPORT_ERROR", "message": str(error), "job_id": job_id, "outcome_unknown": True}) from error
+
+
+def job_status(*, profile_id: str, context: str, job_id: str, tab_id: str | None = None,
+               window_id: int | None = None, service_url: str | None = None) -> JsonObject:
+    """Read a retained job using its exact original selection, including omissions."""
+    _ = _selection_query(profile_id, context)
+    payload: JsonObject = {"profile_id": profile_id, "context": context, "job_id": job_id}
+    if tab_id is not None:
+        payload["tab_id"] = tab_id
+    if window_id is not None:
+        payload["window_id"] = window_id
+    result = http("/job", url=service_url, payload=payload)
+    if "result" in result or result.get("terminal") is True and "error" in result:
+        _acknowledge({**payload, "receipt_id": result.get("receipt_id")}, service_url)
+    return result
+
+
+def _acknowledge(selection: JsonObject, service_url: str | None) -> None:
+    """Release a received payload; failed receipts retain it and never fail the operation."""
+    try:
+        _ = http("/job-ack", url=service_url, payload=selection, timeout=3)
+    except (OSError, BridgeError, ValueError, HTTPException):
+        pass
 
 
 def javascript(*, profile_id: str, context: str, service_url: str | None = None, **fields: Json) -> JsonObject:

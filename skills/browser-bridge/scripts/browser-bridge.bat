@@ -11,8 +11,18 @@ if "%~1"=="request" goto request
 if "%~1"=="discover" goto discover
 if "%~1"=="rdp" goto rdp
 if "%~1"=="find" goto find
-echo Usage: %~nx0 profiles ^| discover [REQUEST.json] ^| find REQUEST.json ^| rdp REQUEST.json ^| status ^| stop ^| tabs PROFILE normal/private ^| request PROFILE normal/private REQUEST.json
+if "%~1"=="job" goto job
+if "%~1"=="job-ack" goto job_ack
+echo Usage: %~nx0 profiles ^| discover [REQUEST.json] ^| find REQUEST.json ^| rdp REQUEST.json ^| job SELECTION.json ^| job-ack SELECTION.json ^| status ^| stop ^| tabs PROFILE normal/private ^| request PROFILE normal/private REQUEST.json
 exit /b 2
+:job
+if "%~2"=="" exit /b 2
+curl.exe --noproxy 127.0.0.1,localhost --silent --show-error --fail-with-body -H "X-Browser-Bridge-Client: 1" -H "Content-Type: application/json" --data-binary "@%~2" "%BROWSER_BRIDGE_URL%/job"
+exit /b %ERRORLEVEL%
+:job_ack
+if "%~2"=="" exit /b 2
+curl.exe --noproxy 127.0.0.1,localhost --silent --show-error --fail-with-body -H "X-Browser-Bridge-Client: 1" -H "Content-Type: application/json" --data-binary "@%~2" "%BROWSER_BRIDGE_URL%/job-ack"
+exit /b %ERRORLEVEL%
 :find
 if "%~2"=="" exit /b 2
 curl.exe --noproxy 127.0.0.1,localhost --silent --show-error --fail-with-body -H "X-Browser-Bridge-Client: 1" -H "Content-Type: application/json" --data-binary "@%~2" "%BROWSER_BRIDGE_URL%/find-tabs"

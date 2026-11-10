@@ -15,11 +15,15 @@ async function update(fields) {
   console.log(JSON.stringify({recording_id: job.recording_id, status: state.status, bytes: state.bytes, notification: state.notification}));
 }
 async function command(method, params = {}) {
-  const reply = await cdp({...job.target, mode: 'authorized_mutation', commands: [{method, params}]});
+  let reply;
+  try {reply = await cdp({...job.target, mode: 'authorized_mutation', commands: [{method, params}]});}
+  catch (error) {
+    throw Object.assign(error, {method, bridge_job_id: error.details?.job_id, outcome_unknown: error.outcome_unknown === true || error.details?.outcome_unknown === true});
+  }
   const item = reply.results?.[0];
   if (reply.error || item?.status !== 'exited' || item.error) {
     const message = String(item?.error || (typeof reply.error === 'object' ? JSON.stringify(reply.error) : reply.error) || 'Browser recording command failed.');
-    throw Object.assign(Error(message), {method, outcome_unknown: reply.outcome_unknown === true || item?.status === 'timed_out'});
+    throw Object.assign(Error(message), {method, bridge_job_id: reply.job_id, outcome_unknown: reply.outcome_unknown === true || item?.status === 'timed_out'});
   }
   if (item.value?.type === 'result_truncated') throw Error('Native video stream data was truncated; no completed filename will be returned.');
   return item.value;
@@ -86,10 +90,10 @@ try {
   if (owned && !stopAttempted) {
     stopAttempted = true;
     try {const stopped = await command('Page.stopScreenRecording'); stream = stopped.stream || stream; owned = false;}
-    catch (stopError) {state.stop_error = stopError.message;}
+    catch (stopError) {state.stop_error = stopError.message; state.stop_bridge_job_id = stopError.bridge_job_id;}
   }
   if (unsupported(error)) await update({status: 'unsupported', supported: false, reason: error.message, stream});
-  else await update({status: 'failed', error: error.message, stream, outcome_unknown: owned || error.outcome_unknown === true});
+  else await update({status: 'failed', error: error.message, bridge_job_id: error.bridge_job_id, stream, outcome_unknown: owned || error.outcome_unknown === true});
   // Keep partial bytes and any unread native stream for explicit recovery.
   // Never replay start/stop or silently discard a failed recording.
 }

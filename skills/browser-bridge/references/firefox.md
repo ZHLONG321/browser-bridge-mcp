@@ -6,7 +6,7 @@ The MV2 background page exposes the granted native `browser.*` APIs. It uses nei
 
 ## Select and call
 
-`discover()` returns browser family, extension `profile_id`, live `connection_id` and windows. Each Firefox call supplies its own `profile_id`, `connection_id` and `context`, plus `window_id` when the user specifies a window. The persistent profile ID survives extension reconnects; the connection ID, subscriptions and native handles do not. `tabs({profile_id, context})` returns `firefox-tab:<profile-id>:<native-id>` and `browser_tab_id`. Native browser methods take that numeric native ID, not the bridge ID.
+`discover()` returns browser family, extension `profile_id`, live `connection_id` and windows. Each Firefox call supplies its own `profile_id`, `connection_id` and `context`, plus `window_id` when the user specifies a window. The persistent profile ID survives extension restarts. A WebSocket reconnect within the same background execution context preserves the connection ID, subscriptions and native handles; a background-context restart replaces them. `tabs({profile_id, context})` returns `firefox-tab:<profile-id>:<native-id>` and `browser_tab_id`. Native browser methods take that numeric native ID, not the bridge ID.
 
 ```javascript
 import {discover, webextension} from '<skill>/scripts/node/client.mjs';
@@ -36,7 +36,7 @@ Every result has `status: completed/failed`; inspect `error` even when HTTP succ
 
 Nested `{"$function":"() => ..."}` supplies an extension-privileged function; nested `{"$base64":"..."}` supplies an ArrayBuffer for APIs accepting one. Page `scripting.executeScript.args` must still be JSON-serializable: pass integer arrays/base64 and reconstruct bytes inside the page function. Check each InjectionResult's `error` as well as its `result`.
 
-Returned objects with methods have `$handle` and `methods`. Call `handles.<id>.<method>` with native arguments; describe `handles` to list them. Unregister/close native registrations before releasing their handle when needed. Reconnect or disabling control clears managed listeners and handles, without undoing prior browser changes. Never replay an uncertain mutation.
+Returned objects with methods have `$handle` and `methods`. Call `handles.<id>.<method>` with native arguments; describe `handles` to list them. Unregister/close native registrations before releasing their handle when needed. A background-context restart or disabling control clears managed listeners and handles, without undoing prior browser changes. A transport reconnect preserves them. Never replay an uncertain mutation.
 
 Example event watch: `path: "tabs.onUpdated", args: [{tabId: nativeTabId, properties: ["status"]}]`. For `webRequest`, host patterns omit TCP ports; add the selected `tabId`. Managed observation listeners do not supply blocking return values. Explicit function callbacks retain the native API's own return and lifetime rules. A completed navigation request does not prove the new page finished loading; inspect its expected URL/document and status before using it.
 

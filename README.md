@@ -1,6 +1,6 @@
 # Browser Bridge MCP
 
-Control Chrome, Edge and Firefox in the background through MCP tools, browser extensions and a local HTTP service. CLI and importable clients are also available. Each operation selects its profile, normal/private context and window explicitly.
+Control Chrome, Edge and Firefox in the background through MCP tools and browser extensions. A shared local service accepts CLI/script HTTP requests and connects to extensions through WebSocket. Each operation selects its profile, normal/private context and window explicitly.
 
 ## Install with an AI agent
 
@@ -35,7 +35,7 @@ skills/browser-bridge/
   extension-firefox/
 ```
 
-The MCP entry point is `scripts/mcp/server.mjs` inside the installed skill. It uses stdio for the AI client and the existing loopback HTTP service for browser extensions. MCP dependencies are locked; the core HTTP services and clients still use standard libraries.
+The MCP entry point is `scripts/mcp/server.mjs` inside the installed skill. It uses stdio for the AI client. The shared service uses HTTP for local clients and WebSocket for extensions; pinned dependencies provide WebSocket framing. MCP, CLI and scripts share browser connections without depending on one Codex session's lifetime.
 
 - [MCP installation and tools](skills/browser-bridge/references/mcp.md)
 - [Browser setup and connection](skills/browser-bridge/references/setup.md)

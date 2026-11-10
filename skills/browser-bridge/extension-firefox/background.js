@@ -1,7 +1,7 @@
 "use strict";
 
 // Firefox MV2 keeps the background page alive without Chromium offscreen APIs.
-let transport = null;
+let socketTransport;
 let config = { bridgeBaseUrl: "", enabled: false };
 let profileId = "";
 let status = { state: "not_configured", error: "" };
@@ -11,8 +11,6 @@ const events = [];
 let eventSequence = 0;
 let eventBytes = 0;
 let eventChain = Promise.resolve();
-let snapshotPending = false;
-let snapshotAgain = false;
 const EVENT_BYTES_LIMIT = 1024 * 1024;
 const encoder = new TextEncoder();
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -190,43 +188,22 @@ function normalizedBase(value) {
   return url.origin;
 }
 
-async function inventory(current) {
+async function inventory() {
   const [tabs, windows, privateAllowed] = await Promise.all([browser.tabs.query({}), browser.windows.getAll(), browser.extension.isAllowedIncognitoAccess()]);
   return {
-    profile_id: profileId, instance_id: current.id, browser: "firefox",
+    profile_id: profileId, browser: "firefox",
     private_allowed: privateAllowed, debugging_enabled: config.enabled,
     windows: windows.map(w => ({window_id: w.id, incognito: w.incognito, focused: w.focused, type: w.type, state: w.state})),
     tabs: tabs.map(t => ({tab_id: "firefox-tab:" + profileId + ":" + t.id, browser_tab_id: t.id, profile_id: profileId, browser: "firefox", url: t.url || "about:blank", title: t.title || "", window_id: t.windowId, tab_index: t.index, active: t.active, pinned: t.pinned, incognito: t.incognito}))
   };
 }
 
-async function post(current, route, results = []) {
-  const response = await fetch(current.base + route, {
-    method: "POST", headers: {"Content-Type": "application/json", "X-Browser-Bridge-Secret": current.secret},
-    body: JSON.stringify({...await inventory(current), results}), signal: current.controller.signal
-  });
-  if (!response.ok) throw new Error("Browser Bridge HTTP " + response.status);
-  const reply = await response.json();
-  for (const id of reply.acknowledged || []) current.results.delete(id);
-  return reply;
-}
+function publishSnapshot() {return socketTransport?.publish() || Promise.resolve();}
 
-async function publishSnapshot() {
-  if (snapshotPending) {snapshotAgain = true; return;}
-  snapshotPending = true;
-  try {
-    do {
-      snapshotAgain = false;
-      const current = transport;
-      if (current) await post(current, "/extension/snapshot", [...current.results.values()]);
-    } while (snapshotAgain);
-  } finally {snapshotPending = false;}
-}
-
-async function executeJob(current, job) {
+async function executeJob(job, progress, instanceId) {
   const result = {job_id: job.job_id, ...(job.tab_id === undefined ? {} : {tab_id: job.tab_id})};
   try {
-    if (job.profile_id !== profileId || job.connection_id !== "browser-extension:" + current.id || !["normal", "private"].includes(job.context)) throw new Error("Profile, connection or privacy selection mismatch");
+    if (job.profile_id !== profileId || job.connection_id !== "browser-extension:" + instanceId || !["normal", "private"].includes(job.context)) throw new Error("Profile, connection or privacy selection mismatch");
     if (job.deadline_at <= Date.now()) throw new Error("Job expired before execution");
     if (job.kind !== "webextension") throw new Error("Use Firefox native WebExtension operations");
     if (job.window_id !== undefined) {
@@ -254,37 +231,12 @@ async function executeJob(current, job) {
         if (tab.active && window.focused) throw new Error("Closing the foreground tab requires permission");
       }
     }
+    if (job.deadline_at <= Date.now()) throw new Error("Job expired before native execution");
+    progress("native:" + job.path);
     result.value = await nativeRequest({...job, after: job.after ?? 0, wait_ms: job.wait_ms ?? 0});
     result.status = "completed";
   } catch (error) {result.status = "failed"; result.error = String(error?.message || error);}
-  if (transport === current) {
-    current.results.set(job.job_id, result);
-    void publishSnapshot().catch(() => current.controller.abort());
-  }
-}
-
-async function session(base) {
-  const controller = new AbortController();
-  const response = await fetch(base + "/extension/bootstrap", {cache: "no-store", signal: AbortSignal.timeout(5000)});
-  if (!response.ok) throw new Error("Browser Bridge HTTP " + response.status);
-  const bootstrap = await response.json();
-  if (typeof bootstrap.secret !== "string") throw new Error("Missing Browser Bridge bootstrap secret");
-  const current = {base, secret: bootstrap.secret, id: crypto.randomUUID(), controller, results: new Map()};
-  transport = current;
-  const heartbeat = setInterval(() => {void publishSnapshot().catch(() => controller.abort());}, 10000);
-  try {
-    await post(current, "/extension/snapshot");
-    status = {state: "connected", error: ""};
-    while (!controller.signal.aborted) {
-      const reply = await post(current, "/extension/poll", [...current.results.values()]);
-      for (const job of reply.jobs || []) void executeJob(current, job);
-    }
-  } finally {
-    clearInterval(heartbeat);
-    controller.abort();
-    if (transport === current) transport = null;
-    clearSubscriptions();
-  }
+  return result;
 }
 
 async function run() {
@@ -292,29 +244,26 @@ async function run() {
   profileId = stored.profileId || crypto.randomUUID();
   await browser.storage.local.set({profileId});
   config = {bridgeBaseUrl: stored.bridgeBaseUrl || "http://127.0.0.1:30003", enabled: stored.enabled === true};
-  let attempts = 0;
-  while (true) {
-    const started = Date.now();
-    try {await session(normalizedBase(config.bridgeBaseUrl));}
-    catch (error) {status = {state: "disconnected", error: String(error?.message || error)};}
-    if (Date.now() - started > 30000) attempts = 0;
-    await sleep(Math.min(10000, 1000 * (2 ** Math.min(attempts++, 4))));
-  }
+  socketTransport = globalThis.BrowserBridgeSocket.create({
+    baseUrl: () => normalizedBase(config.bridgeBaseUrl), inventory, execute: executeJob,
+    status: (state, error) => {status = {state, error};},
+  });
+  await socketTransport.start();
 }
 
 for (const event of [browser.tabs.onCreated, browser.tabs.onRemoved, browser.tabs.onUpdated, browser.tabs.onMoved, browser.tabs.onAttached, browser.tabs.onActivated, browser.windows.onCreated, browser.windows.onRemoved, browser.permissions.onAdded, browser.permissions.onRemoved]) {
-  event.addListener(() => {void publishSnapshot().catch(() => transport?.controller.abort());});
+  event.addListener(() => {void publishSnapshot();});
 }
 browser.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
   if (changes.enabled) {config.enabled = changes.enabled.newValue === true; if (!config.enabled) clearSubscriptions();}
   if (changes.bridgeBaseUrl) config.bridgeBaseUrl = changes.bridgeBaseUrl.newValue || "";
-  if (changes.bridgeBaseUrl) transport?.controller.abort();
-  void publishSnapshot().catch(() => transport?.controller.abort());
+  if (changes.bridgeBaseUrl) socketTransport?.reconnect();
+  void publishSnapshot();
 });
 browser.runtime.onMessage.addListener((message, sender) => {
   if (sender.url !== browser.runtime.getURL("options.html")) return undefined;
-  if (message.type === "status") return Promise.resolve({...status, profile_id: profileId, connection_id: transport ? "browser-extension:" + transport.id : null, enabled: config.enabled});
+  if (message.type === "status") return Promise.resolve({...status, profile_id: profileId, connection_id: socketTransport ? "browser-extension:" + socketTransport.instanceId : null, enabled: config.enabled});
   return undefined;
 });
 browser.browserAction.onClicked.addListener(() => browser.runtime.openOptionsPage());

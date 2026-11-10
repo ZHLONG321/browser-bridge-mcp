@@ -13,7 +13,7 @@ Use the active environment's required Python runner when it differs. Resolve the
 
 Import clients by their installed paths. They use standard libraries and never start the service implicitly. Each call supplies its own `profile_id` and `context: normal / private`; include `window_id` when the user specifies a window. There is no bound client or current/default profile. Calls targeting different browsers can run concurrently.
 
-Client and server runtimes are independent. Either server accepts both clients and the BAT/curl CLI; use an available runtime without installing another. On Windows, dynamic Node imports use `pathToFileURL` to turn a local path into a module URL.
+Client and server runtimes are independent. Either server accepts both clients and the BAT/curl CLI; prepare that server's [runtime dependencies](setup.md#runtime-and-server). On Windows, dynamic Node imports use `pathToFileURL` to turn a local path into a module URL. Requests generate a job ID before submission; use `job_status` with the original selection after an uncertain failure. Result acknowledgement and retention follow [Operations](operations.md#jobs-websockets-and-reconnection).
 
 ## Node.js
 

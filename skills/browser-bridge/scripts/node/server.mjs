@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { RdpManager, NativeError } from './rdp.mjs';
+import { extensionSockets } from './extension-socket.mjs';
 
 const SERVICE = 'browser-bridge-skill';
 const options = parseArgs({options: {session: {type: 'string'}, port: {type: 'string', default: '30003'}, serve: {type: 'boolean', default: false}}}).values;
@@ -39,7 +40,7 @@ if (!options.serve) {
   const pending = new Map();
   const rdp = new RdpManager();
   class Failure extends Error {
-    constructor(status, code, message, extra = {}) { super(message); Object.assign(this, {status, code, extra}); }
+    constructor(status, code, message, extra = {}) { super(message); Object.assign(this, {status, code, extra: {...extra, ...(extra.terminal ? {receipt_id: randomUUID()} : {})}}); }
   }
   const fail = (status, code, message, extra) => { throw new Failure(status, code, message, extra); };
   const send = (response, status, body) => {
@@ -47,7 +48,7 @@ if (!options.serve) {
     response.end(JSON.stringify(body));
   };
   const log = (event, values = {}) => console.log(JSON.stringify({at: new Date().toISOString(), event, ...values}));
-  const live = profile => Date.now() - profile.seen < 45000;
+  const live = profile => profile.socket?.readyState === 1 && Date.now() - profile.seen < 45000;
   const selected = url => {
     const id = url.searchParams.get('profile_id');
     const context = url.searchParams.get('context');
@@ -61,17 +62,25 @@ if (!options.serve) {
     if (typeof body.profile_id !== 'string' || typeof body.instance_id !== 'string' || !Array.isArray(body.tabs) || !Array.isArray(body.windows)) fail(400, 'INVALID_SNAPSHOT', 'Invalid extension inventory.');
     let profile = profiles.get(body.profile_id);
     if (!profile || profile.instance !== body.instance_id) {
+      const retired = new Set(profile?.retired || []);
+      if (retired.has(body.instance_id)) fail(409, 'STALE_EXECUTION_CONTEXT', 'A retired extension execution context cannot replace the current one.');
       if (profile) {
-        profile.waiter?.();
-        for (const entry of pending.values()) if (entry.profile === body.profile_id) entry.reject(new Failure(409, 'EXTENSION_RESTARTED', 'The extension restarted; inspect the target before repeating a mutation.', {outcome_unknown: entry.dispatched}));
+        retired.add(profile.instance);
+        for (const jobId of profile.active) {
+          const entry = pending.get(jobId);
+          if (!entry || entry.finished || entry.error) continue;
+          entry.error = new Failure(409, 'EXTENSION_RESTARTED', 'The extension execution context restarted; inspect dispatched work before repeating it.', {job_id: entry.job.job_id, outcome_unknown: entry.dispatched, terminal: true});
+          entry.reject?.(entry.error);
+        }
+        profile.socket?.close(1000, 'Execution context replaced');
       }
-      profile = {instance: body.instance_id, queue: [], waiter: null};
+      profile = {identity: body.profile_id, instance: body.instance_id, socket: null, retired, active: new Set()};
       profiles.set(body.profile_id, profile);
     }
-    Object.assign(profile, {seen: Date.now(), tabs: body.tabs, windows: body.windows, browser: body.browser || 'chromium', private_allowed: body.private_allowed === true, debugging_enabled: body.debugging_enabled === true});
+    Object.assign(profile, {seen: Date.now(), tabs: body.tabs, windows: body.windows, browser: body.browser || 'chromium', extension_version: body.extension_version, private_allowed: body.private_allowed === true, debugging_enabled: body.debugging_enabled === true});
     return profile;
   }
-  const extensionInventory = () => [...profiles.entries()].filter(([, p]) => live(p)).map(([id, p]) => ({profile_id: id, connection_id: `browser-extension:${p.instance}`, browser: p.browser, protocol: p.browser === 'firefox' ? 'webextension' : 'cdp', capabilities: p.browser === 'firefox' ? ['webextension'] : ['javascript', 'list_frames', 'cdp', 'tab_control', 'window_control', 'userscript', 'debugging'], connected: true, private_allowed: p.private_allowed, debugging_enabled: p.debugging_enabled, windows: p.windows}));
+  const extensionInventory = () => [...profiles.entries()].filter(([, p]) => live(p)).map(([id, p]) => ({profile_id: id, connection_id: `browser-extension:${p.instance}`, browser: p.browser, protocol: p.browser === 'firefox' ? 'webextension' : 'cdp', capabilities: p.browser === 'firefox' ? ['webextension'] : ['javascript', 'list_frames', 'cdp', 'tab_control', 'window_control', 'userscript', 'debugging'], connected: true, extension_transport: 'websocket', extension_protocol: 2, extension_version: p.extension_version, private_allowed: p.private_allowed, debugging_enabled: p.debugging_enabled, windows: p.windows}));
   const inventory = () => ({status: 'completed', connections: [...extensionInventory(), ...rdp.inventory()]});
   function findTabs(body) {
     const match = body.match === undefined ? {} : body.match;
@@ -88,17 +97,6 @@ if (!options.serve) {
     }
     return {status: 'completed', matches};
   }
-  function dispatch(profile) {
-    const jobs = [];
-    for (const jobId of profile.queue.splice(0)) {
-      const entry = pending.get(jobId);
-      if (!entry) continue;
-      entry.dispatched = true;
-      jobs.push(entry.job);
-      log('dispatched', {job_id: jobId, profile_id: entry.profile, operation: entry.job.kind});
-    }
-    return jobs;
-  }
   const server = createServer(async (request, response) => {
     try {
       if (request.headers.host !== `127.0.0.1:${port}` && request.headers.host !== `localhost:${port}`) fail(403, 'HOST_FORBIDDEN', 'Use the configured loopback address.');
@@ -109,8 +107,8 @@ if (!options.serve) {
         if (origin && !/^(chrome-extension:\/\/[a-p]+|moz-extension:\/\/[a-f0-9-]+)$/i.test(origin)) fail(403, 'ORIGIN_FORBIDDEN', 'Only extension origins may use this route.');
         if (url.pathname !== '/extension/bootstrap' && !tokenValid(request.headers['x-browser-bridge-secret'])) fail(401, 'INVALID_SECRET', 'Reconnect the extension.');
       } else if (origin || (url.pathname !== '/probe' && request.headers['x-browser-bridge-client'] !== '1')) fail(403, 'CLIENT_HEADER_REQUIRED', 'Use the CLI or client module.');
-      if (request.method === 'GET' && url.pathname === '/probe') return send(response, 200, {service: SERVICE, version: 1, pid: process.pid});
-      if (request.method === 'GET' && url.pathname === '/extension/bootstrap') return send(response, 200, {secret});
+      if (request.method === 'GET' && url.pathname === '/probe') return send(response, 200, {service: SERVICE, version: 1, pid: process.pid, extension_transport: 'websocket', extension_protocol: 2, service_instance_id: transport.serviceInstance});
+      if (request.method === 'GET' && url.pathname === '/extension/bootstrap') return send(response, 200, {secret, protocol: 2});
       if (request.method === 'GET' && url.pathname === '/profiles') return send(response, 200, {profiles: extensionInventory()});
       if (request.method === 'GET' && url.pathname === '/discover') return send(response, 200, inventory());
       if (request.method === 'GET' && url.pathname === '/tabs') {
@@ -126,6 +124,29 @@ if (!options.serve) {
       let body;
       try { body = text ? JSON.parse(text) : {}; } catch { fail(400, 'INVALID_JSON', 'Provide UTF-8 JSON.'); }
       if (!body || typeof body !== 'object' || Array.isArray(body)) fail(400, 'INVALID_JSON', 'The request body must be an object.');
+      if (url.pathname === '/job' || url.pathname === '/job-ack') {
+        const entry = pending.get(body.job_id);
+        if (!entry) fail(404, 'JOB_NOT_FOUND', 'This service has no record of the job. Do not infer that it did not execute.');
+        const job = entry.job;
+        if (['profile_id', 'context', 'tab_id', 'window_id'].some(key => body[key] !== job[key])) fail(409, 'JOB_SELECTION_MISMATCH', 'Repeat the exact original profile, privacy, tab and window selection.');
+        if (url.pathname === '/job-ack') {
+          if (!entry.finished && !entry.error) fail(409, 'JOB_NOT_COMPLETE', 'Only a final result or terminal service error can be acknowledged.');
+          const receipt = entry.finished ? entry.receiptId : entry.error.extra.receipt_id;
+          if (body.receipt_id !== receipt) fail(409, 'JOB_RECEIPT_MISMATCH', 'Acknowledge only the receipt_id you actually received. Query the current result before another acknowledgement.');
+          entry.result = null; entry.delivered = true;
+          entry.resolve = null; entry.reject = null;
+          entry.job = Object.fromEntries(['job_id', 'profile_id', 'context', 'tab_id', 'window_id', 'kind', 'deadline_at'].filter(key => job[key] !== undefined).map(key => [key, job[key]]));
+          return send(response, 200, {job_id: job.job_id, acknowledged: true});
+        }
+        const unknown = entry.finished ? entry.outcomeUnknown : entry.error?.extra?.outcome_unknown ?? entry.dispatched;
+        return send(response, 200, {job_id: job.job_id, phase: entry.phase,
+          status: entry.finished ? (unknown ? 'outcome_unknown' : 'completed') : entry.error ? 'failed' : entry.dispatched ? 'dispatched' : 'queued',
+          outcome_unknown: unknown,
+          terminal: entry.finished === true || Boolean(entry.error),
+          ...(entry.finished || entry.error ? {receipt_id: entry.finished ? entry.receiptId : entry.error.extra.receipt_id} : {}),
+          result_delivered: entry.delivered === true,
+          ...(entry.result ? {result: entry.result} : {}), ...(entry.error ? {error: {code: entry.error.code, message: entry.error.message, ...entry.error.extra}} : {})});
+      }
       if (url.pathname === '/find-tabs') return send(response, 200, findTabs(body));
       if (url.pathname === '/rdp') return send(response, 200, await rdp.execute(body));
       if (url.pathname === '/discover') {
@@ -138,34 +159,16 @@ if (!options.serve) {
         else return send(response, 200, inventory());
       }
       if (url.pathname === '/shutdown') {
-        // Flush the acknowledgement before closing active extension long polls.
+        // Flush the acknowledgement before disconnecting shared transports.
         response.once('finish', () => server.closeAllConnections());
         send(response, 200, {stopping: true});
-        for (const profile of profiles.values()) profile.waiter?.();
-        for (const entry of pending.values()) entry.reject(new Failure(409, 'SERVER_STOPPING', 'Service stopping; inspect dispatched work before repeating it.', {outcome_unknown: entry.dispatched}));
+        transport.close();
+        for (const entry of pending.values()) if (!entry.finished && !entry.error) entry.reject?.(new Failure(409, 'SERVER_STOPPING', 'Service stopping; inspect dispatched work before repeating it.', {job_id: entry.job.job_id, outcome_unknown: entry.dispatched}));
         rdp.close();
         server.close();
         return;
       }
-      if (url.pathname === '/extension/snapshot' || url.pathname === '/extension/poll') {
-        const profile = snapshot(body);
-        const acknowledged = [];
-        for (const result of body.results || []) {
-          const entry = pending.get(result.job_id);
-          if (entry && entry.profile === body.profile_id && entry.job.tab_id === result.tab_id && entry.dispatched) entry.resolve(result);
-          acknowledged.push(result.job_id);
-        }
-        if (url.pathname === '/extension/snapshot' || acknowledged.length) return send(response, 200, {acknowledged, jobs: []});
-        if (!profile.queue.length) await new Promise(resolve => {
-          const finish = () => { clearTimeout(timer); if (profile.waiter === finish) profile.waiter = null; resolve(); };
-          const timer = setTimeout(finish, 12000);
-          profile.waiter?.();
-          profile.waiter = finish;
-          response.once('close', finish);
-        });
-        if (!response.destroyed) send(response, 200, {acknowledged, jobs: dispatch(profile)});
-        return;
-      }
+      if (url.pathname === '/extension/snapshot' || url.pathname === '/extension/poll') fail(409, 'EXTENSION_UPGRADE_REQUIRED', 'This service requires extension WebSocket protocol 2. Load the matching extension version once.');
       if (url.pathname !== '/request') fail(404, 'NOT_FOUND', 'Unknown service route.');
       const {profile, context, id} = selected(url);
       const operation = body.operation;
@@ -209,18 +212,23 @@ if (!options.serve) {
       if ((['tab_control', 'window_control'].includes(operation) || operation === 'debugging' && body.action === 'enable' || operation === 'userscript' && !['list', 'list_commands'].includes(body.userscript_action)) && mode !== 'authorized_mutation') fail(403, 'MUTATION_NOT_AUTHORIZED', 'This operation requires authorized_mutation.');
       const timeout = body.timeout_ms ?? 30000;
       if (!Number.isFinite(timeout) || timeout <= 0) fail(400, 'INVALID_TIMEOUT', 'timeout_ms must be positive.');
-      const jobId = randomUUID();
+      const jobId = body.job_id ?? randomUUID();
+      if (typeof jobId !== 'string' || !/^[0-9a-f-]{36}$/i.test(jobId)) fail(400, 'INVALID_JOB_ID', 'job_id must be a UUID.');
+      if (pending.has(jobId)) fail(409, 'JOB_ALREADY_EXISTS', 'Inspect this job with /job; it will not be executed again.', {job_id: jobId});
       const job = {...body, kind: operation, mode, job_id: jobId, profile_id: id, context, deadline_at: Date.now() + timeout};
       if (operation === 'tab_control') job.tab_control = {...body, target_tab_id: body.tab_id, context};
       const result = await new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           const entry = pending.get(jobId);
-          entry?.reject(new Failure(504, 'DEADLINE_EXCEEDED', 'The deadline expired. Inspect the target before repeating dispatched work.', {job_id: jobId, outcome_unknown: entry.dispatched}));
-        }, timeout);
-        const finish = callback => value => { clearTimeout(timer); pending.delete(jobId); callback(value); };
-        pending.set(jobId, {profile: id, dispatched: false, job, resolve: finish(resolve), reject: finish(reject)});
-        profile.queue.push(jobId);
-        profile.waiter?.();
+          if (!entry) return;
+          const error = new Failure(504, 'DEADLINE_EXCEEDED', 'The wait expired. Query this job before repeating any dispatched work.', {job_id: jobId, phase: entry.phase, outcome_unknown: entry.dispatched, terminal: !entry.dispatched});
+          if (!entry.dispatched) {entry.error = error; profile.active.delete(jobId);}
+          entry.reject(error);
+        }, timeout + 1000); // Deliver the extension's deadline result before expiring the HTTP wait.
+        const finish = callback => value => { clearTimeout(timer); callback(value); };
+        pending.set(jobId, {profile: id, dispatched: false, phase: 'queued', job, resolve: finish(resolve), reject: finish(reject)});
+        profile.active.add(jobId);
+        transport.submit(profile);
       });
       log('completed', {job_id: jobId, profile_id: id, operation});
       send(response, 200, result);
@@ -229,6 +237,7 @@ if (!options.serve) {
       if (!response.headersSent && !response.destroyed) send(response, error.status || 500, {code: error.code || 'INTERNAL_ERROR', message: error instanceof Failure || error instanceof NativeError ? error.message : 'Service error; inspect server.log.', ...(error.extra || {})});
     }
   });
+  const transport = extensionSockets(server, {port, tokenValid, profiles, pending, snapshot, Failure, log});
   server.on('error', error => {
     log('startup_failed', {code: error.code});
     process.send?.({error: error.code === 'EADDRINUSE' ? 'Port already in use; choose an explicit --port or inspect the existing service.' : error.code});

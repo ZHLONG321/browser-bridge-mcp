@@ -13,32 +13,38 @@
     }
     return {
       nativeRefreshSupported: true,
-      async run(request) {
+      async run(request, execution) {
         const id = native(request.target_tab_id);
         const tab = await tabs.get(id);
         if (!['normal', 'private'].includes(request.context) || tab.incognito !== (request.context === 'private')) throw new Error('Window privacy context mismatch.');
         if (request.window_id !== undefined && tab.windowId !== request.window_id) throw new Error('Window selection mismatch.');
         if (request.action === 'open') {
+          execution?.native('native:tabs.create');
           const created = await tabs.create({url: webUrl(request.url), active: false, windowId: tab.windowId});
           return {tab_id: prefix + created.id, window_id: created.windowId, incognito: created.incognito};
         }
         if (request.action === 'navigate') {
+          execution?.native('native:tabs.update');
           await tabs.update(id, {url: webUrl(request.url)});
           return {tab_id: prefix + id, navigated: true};
         }
         if (request.action === 'reload') {
+          execution?.native('native:tabs.reload');
           await tabs.reload(id, {bypassCache: false});
           return {tab_id: prefix + id, reloaded: true};
         }
         if (request.action === 'close') {
           const window = await chrome.windows.get(tab.windowId);
           if (tab.active && window.focused && request.allow_foreground !== true) throw new Error('Closing the foreground tab requires explicit foreground permission.');
+          execution?.native('native:tabs.remove');
           await tabs.remove(id);
           return {tab_id: prefix + id, closed: true};
         }
         if (request.action === 'activate') {
           if (request.allow_foreground !== true) throw new Error('Activating a tab requires explicit foreground permission.');
+          execution?.native('native:tabs.update');
           await tabs.update(id, {active: true});
+          execution?.native('native:windows.update');
           await chrome.windows.update(tab.windowId, {focused: true});
           return {tab_id: prefix + id, activated: true};
         }

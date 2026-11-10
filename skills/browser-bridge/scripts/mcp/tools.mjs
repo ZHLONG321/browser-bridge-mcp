@@ -60,6 +60,7 @@ async function probe() {
   if (value.service !== 'browser-bridge-skill' || value.version !== 1) {
     throw new Error('The configured URL is not a compatible Browser Bridge HTTP service.');
   }
+  if (value.extension_protocol !== 2 || value.extension_transport !== 'websocket') throw new Error('SERVICE_UPGRADE_REQUIRED: the running service uses the previous extension transport. Coordinate one service upgrade; do not reload the extension as a connection workaround.');
   return value;
 }
 
@@ -113,7 +114,7 @@ export function registerTools(server) {
             ...(error.stdout === undefined ? {} : {launcher_output: error.stdout}),
             ...(error.stderr === undefined ? {} : {launcher_error: error.stderr}),
           },
-          recovery: 'If a browser call was dispatched, its outcome may be unknown. Inspect the resolved target before repeating a mutation. A service connection refusal can be handled with bridge_service_start.',
+          recovery: 'Use browser_job_status with the returned job_id and exact original selection after an uncertain call. Inspect its result and the resolved target before repeating a mutation. A service connection refusal can be handled with bridge_service_start.',
         }, true);
       }
     });
@@ -128,6 +129,9 @@ export function registerTools(server) {
     query: z.string().optional(),
   }, bridge.find_tabs, true);
   tool('browser_tab_list', 'List tabs in one explicit profile and normal/private context, optionally within one resolved window.', selection, bridge.tabs, true);
+  tool('browser_job_status', 'Inspect a retained browser job after a timeout or reconnect without repeating it. Repeat the exact original profile, privacy, tab and optional window selection, including originally omitted fields. A missing record after service restart does not prove the operation did not run. Inspect outcome_unknown and every native result.', {
+    ...selection, job_id: z.string().uuid(), tab_id: tab.optional(),
+  }, bridge.job_status, true);
 
   const screenshotDescription = 'Captures once without scrolling, focusing, searching or waiting for application readiness. Saves a compressed image at %TMP%/codex-<session_id>-browser-bridge/screen/ and returns ONLY its filename after confirming the complete file exists. Preserves native pixel dimensions; no file-size cap or automatic quality reduction. Use the exact directory plus filename with the client image-viewing tool. Firefox requires a live connection_id, native control and site permissions.';
   tool('browser_screenshot_full_page', `Capture the top document\'s full scrollable page extent. Nested scrolling containers retain their current visible contents; lazy loading and container scrolling belong to an AI-written script. ${screenshotDescription}`, screenshotFields,

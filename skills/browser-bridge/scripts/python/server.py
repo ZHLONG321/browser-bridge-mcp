@@ -1,4 +1,4 @@
-"""Dependency-free fallback server and hidden launcher for the Browser Bridge protocol."""
+"""HTTP client API, authenticated extension WebSockets and hidden service launcher."""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from urllib.parse import parse_qs, urlsplit
 # This file is a direct script entry point; its directory is Python's import root.
 from browser_bridge import Json, JsonObject, http, read_json
 from rdp import RdpError, RdpManager
+from websocket_peer import WebSocketPeer
 
 SERVICE = "browser-bridge-skill"
 
@@ -31,6 +32,8 @@ class Failure(Exception):
     def __init__(self, status: int, code: str, message: str, **details: Json) -> None:
         super().__init__(message)
         self.status: int = status
+        if details.get("terminal") is True:
+            details["receipt_id"] = str(uuid.uuid4())
         self.body: JsonObject = {"code": code, "message": message, **details}
 
 
@@ -54,7 +57,9 @@ class Profile:
     instance: str
     inventory: JsonObject
     seen: float = field(default_factory=time.monotonic)
-    queue: list[str] = field(default_factory=list)
+    peer: WebSocketPeer | None = None
+    retired: set[str] = field(default_factory=set)
+    active: dict[str, None] = field(default_factory=dict)
 
 
 @dataclass
@@ -65,6 +70,13 @@ class Pending:
     ready: threading.Event = field(default_factory=threading.Event)
     result: JsonObject | None = None
     error: Failure | None = None
+    phase: str = "queued"
+    finished: bool = False
+    delivered: bool = False
+    outcome_unknown: bool = False
+    waiting: bool = False
+    wait_result: JsonObject | None = None
+    receipt_id: str | None = None
 
 
 class State:
@@ -75,14 +87,18 @@ class State:
         self.pending: dict[str, Pending] = {}
         self.stopping: bool = False
         self.rdp: RdpManager = RdpManager()
+        self.instance: str = str(uuid.uuid4())
+
+    def live(self, profile: Profile) -> bool:
+        return profile.peer is not None and not profile.peer.closed and time.monotonic() - profile.seen < 45
 
     def extension_inventory(self) -> list[Json]:
         rows: list[Json] = []
         for profile in self.profiles.values():
-            if time.monotonic() - profile.seen < 45:
+            if self.live(profile):
                 browser = profile.inventory.get("browser", "chromium")
                 row: JsonObject = {"profile_id": profile.identity, "connection_id": "browser-extension:" + profile.instance,
-                                   "browser": browser, "protocol": "webextension" if browser == "firefox" else "cdp", "connected": True,
+                                   "browser": browser, "protocol": "webextension" if browser == "firefox" else "cdp", "connected": True, "extension_transport": "websocket", "extension_protocol": 2, "extension_version": profile.inventory.get("extension_version"),
                                    "capabilities": ["webextension"] if browser == "firefox" else ["javascript", "list_frames", "cdp", "tab_control", "window_control", "userscript", "debugging"]}
                 for key in ("private_allowed", "debugging_enabled", "windows"):
                     row[key] = profile.inventory[key]
@@ -100,7 +116,7 @@ class State:
         needle = query.lower()
         matches: list[Json] = []
         for profile in self.profiles.values():
-            if time.monotonic() - profile.seen >= 45:
+            if not self.live(profile):
                 continue
             for tab in objects(profile.inventory, "tabs"):
                 row: JsonObject = {**tab, "profile_id": profile.identity,
@@ -117,12 +133,19 @@ class State:
         _ = objects(body, "windows")
         profile = self.profiles.get(identity)
         if profile is None or profile.instance != instance:
+            retired: set[str] = set() if profile is None else profile.retired | {profile.instance}
+            if instance in retired:
+                raise Failure(409, "STALE_EXECUTION_CONTEXT", "A retired extension execution context cannot replace the current one.")
             if profile is not None:
-                for entry in self.pending.values():
-                    if entry.profile == identity:
-                        entry.error = Failure(409, "EXTENSION_RESTARTED", "The extension restarted; inspect the target before repeating a mutation.", outcome_unknown=entry.dispatched)
+                for job_id in profile.active:
+                    entry = self.pending.get(job_id)
+                    if entry is not None and not entry.finished and entry.error is None:
+                        entry.error = Failure(409, "EXTENSION_RESTARTED", "The extension execution context restarted; inspect dispatched work before repeating it.", job_id=entry.job["job_id"], outcome_unknown=entry.dispatched, terminal=True)
                         entry.ready.set()
+                if profile.peer is not None:
+                    profile.peer.close()
             profile = Profile(identity, instance, body)
+            profile.retired = retired
             self.profiles[identity] = profile
         profile.inventory = body
         profile.seen = time.monotonic()
@@ -135,15 +158,115 @@ class State:
         if not identity or context not in ("normal", "private"):
             raise Failure(400, "SELECTION_REQUIRED", "Explicit profile_id and normal/private context are required.")
         profile = self.profiles.get(identity)
-        if profile is None or time.monotonic() - profile.seen >= 45:
+        if profile is None or not self.live(profile):
             raise Failure(404, "PROFILE_NOT_CONNECTED", "The selected profile is not connected. Enumerate profiles again.")
         return profile, context
+
+    def deliver(self, profile: Profile, accepted: set[str] | None = None) -> None:
+        """Queue deliveries under condition; never repeat an accepted operation."""
+        if profile.peer is None or profile.peer.closed:
+            return
+        for job_id in tuple(profile.active):
+            entry = self.pending.get(job_id)
+            if entry is None or entry.finished or entry.error is not None:
+                continue
+            deadline = entry.job.get("deadline_at")
+            if not isinstance(deadline, (float, int)) or deadline <= time.time() * 1000:
+                if accepted is not None and job_id not in accepted:
+                    entry.phase = "expired_before_acceptance"
+                    entry.error = Failure(504, "DEADLINE_EXCEEDED", "The same extension execution context confirmed this expired job was never accepted.", job_id=job_id, phase=entry.phase, outcome_unknown=False, terminal=True)
+                    _ = profile.active.pop(job_id, None)
+                    entry.ready.set()
+                continue
+            if entry.dispatched and (accepted is None or string(entry.job, "job_id") in accepted):
+                continue
+            entry.dispatched = True
+            entry.phase = "dispatched"
+            profile.peer.send({"type": "job", "job": entry.job})
+            print(json.dumps({"event": "dispatched", "job_id": entry.job["job_id"], "profile_id": profile.identity}), flush=True)
 
 
 def serve(port: int) -> None:
     state = State()
 
     class Handler(BaseHTTPRequestHandler):
+        def socket_session(self) -> None:
+            peer = WebSocketPeer(self)
+            profile: Profile | None = None
+            try:
+                for message in peer.messages():
+                    with state.condition:
+                        if profile is None:
+                            accepted = message.get("accepted_job_ids")
+                            if message.get("type") != "hello" or message.get("protocol") != 2 or not hmac.compare_digest(string(message, "secret"), state.secret) or not isinstance(accepted, list) or any(not isinstance(item, str) for item in accepted):
+                                raise Failure(401, "HANDSHAKE_REQUIRED", "Bootstrap and authenticate protocol 2.")
+                            value = message.get("snapshot")
+                            if not isinstance(value, dict):
+                                raise Failure(400, "INVALID_SNAPSHOT", "Provide an extension inventory.")
+                            profile = state.snapshot(value)
+                            previous = profile.peer
+                            profile.peer = peer
+                            if previous is not None and previous is not peer:
+                                previous.close()
+                            peer.authenticated()
+                            peer.send({"type": "welcome", "protocol": 2, "service_instance_id": state.instance})
+                            state.deliver(profile, {item for item in accepted if isinstance(item, str)})
+                            print(json.dumps({"event": "extension_connected", "profile_id": profile.identity, "instance_id": profile.instance}), flush=True)
+                        else:
+                            if profile.peer is not peer:
+                                return
+                            kind = message.get("type")
+                            if kind == "inventory":
+                                value = message.get("snapshot")
+                                if not isinstance(value, dict) or value.get("profile_id") != profile.identity or value.get("instance_id") != profile.instance:
+                                    raise Failure(409, "INSTANCE_MISMATCH", "Reconnect with a new handshake.")
+                                _ = state.snapshot(value)
+                            elif kind == "result":
+                                job, result = message.get("job"), message.get("result")
+                                if not isinstance(job, dict) or not isinstance(result, dict) or job.get("profile_id") != profile.identity or job.get("job_id") != result.get("job_id") or job.get("tab_id") != result.get("tab_id"):
+                                    raise Failure(400, "INVALID_RESULT", "Result selection does not match its job.")
+                                job_id = string(job, "job_id")
+                                entry = state.pending.get(job_id)
+                                if entry is None:
+                                    entry = Pending(profile.identity, job, dispatched=True)
+                                    state.pending[job_id] = entry
+                                if entry.profile != profile.identity or entry.job.get("tab_id") != result.get("tab_id"):
+                                    raise Failure(409, "JOB_MISMATCH", "Result belongs to another selection.")
+                                if not entry.finished:
+                                    entry.receipt_id = str(uuid.uuid4())
+                                    entry.result, entry.error, entry.phase = {**result, "receipt_id": entry.receipt_id}, None, "completed"
+                                    entry.delivered = False
+                                    if entry.waiting:
+                                        entry.wait_result = entry.result
+                                    entry.finished = True
+                                    entry.outcome_unknown = result.get("outcome_unknown") is True
+                                    _ = profile.active.pop(job_id, None)
+                                    entry.ready.set()
+                                peer.send({"type": "result_ack", "job_id": job_id})
+                                print(json.dumps({"event": "completed", "job_id": job_id, "profile_id": profile.identity}), flush=True)
+                            elif kind == "progress":
+                                job_id, phase = string(message, "job_id"), string(message, "phase")
+                                entry = state.pending.get(job_id)
+                                if entry is not None and entry.profile == profile.identity and not entry.finished and entry.error is None:
+                                    entry.phase = phase
+                                    print(json.dumps({"event": "job_progress", "job_id": job_id, "profile_id": profile.identity, "phase": phase}), flush=True)
+                            elif kind == "ping":
+                                peer.send({"type": "pong", "at": time.time() * 1000})
+                            else:
+                                raise Failure(400, "INVALID_MESSAGE", "Unknown extension message type.")
+                        profile.seen = time.monotonic()
+            except Failure as error:
+                peer.send({"type": "error", **error.body})
+                peer.close(graceful=True)
+            except (OSError, ValueError):
+                pass
+            finally:
+                peer.close()
+                with state.condition:
+                    if profile is not None and profile.peer is peer:
+                        profile.peer = None
+                        print(json.dumps({"event": "extension_disconnected", "profile_id": profile.identity, "instance_id": profile.instance}), flush=True)
+
         def log_message(self, format: str, *args: Json) -> None:  # pyright: ignore[reportImplicitOverride]
             # Do not log request bodies, profile labels, page URLs or transport secrets.
             return
@@ -184,25 +307,28 @@ def serve(port: int) -> None:
                 if origin and not re.fullmatch(r"(?:chrome-extension://[a-p]+|moz-extension://[a-f0-9-]+)", origin, re.IGNORECASE):
                     raise Failure(403, "ORIGIN_FORBIDDEN", "Only extension origins may use this route.")
                 supplied = self.headers.get("X-Browser-Bridge-Secret", "")
-                if path != "/extension/bootstrap" and not hmac.compare_digest(supplied, state.secret):
+                if path not in ("/extension/bootstrap", "/extension/ws") and not hmac.compare_digest(supplied, state.secret):
                     raise Failure(401, "INVALID_SECRET", "Reconnect the extension.")
             elif origin or path != "/probe" and self.headers.get("X-Browser-Bridge-Client") != "1":
                 raise Failure(403, "CLIENT_HEADER_REQUIRED", "Use the CLI or client module.")
             if self.command == "GET":
+                if path == "/extension/ws":
+                    if self.headers.get("Upgrade", "").lower() != "websocket":
+                        raise Failure(400, "UPGRADE_REQUIRED", "Use a WebSocket connection.")
+                    self.socket_session()
+                    return
                 if path == "/probe":
-                    self.send(200, {"service": SERVICE, "version": 1, "pid": os.getpid()})
+                    self.send(200, {"service": SERVICE, "version": 1, "pid": os.getpid(), "extension_transport": "websocket", "extension_protocol": 2, "service_instance_id": state.instance})
                     return
                 if path == "/extension/bootstrap":
-                    self.send(200, {"secret": state.secret})
+                    self.send(200, {"secret": state.secret, "protocol": 2})
                     return
                 with state.condition:
                     if path == "/profiles":
-                        self.send(200, {"profiles": state.extension_inventory()})
-                        return
-                    if path == "/discover":
-                        self.send(200, state.inventory())
-                        return
-                    if path == "/tabs":
+                        output: JsonObject = {"profiles": state.extension_inventory()}
+                    elif path == "/discover":
+                        output = state.inventory()
+                    elif path == "/tabs":
                         profile, context = state.selection(query)
                         window_id = None
                         if "window_id" in query:
@@ -211,9 +337,11 @@ def serve(port: int) -> None:
                             except ValueError:
                                 raise Failure(400, "INVALID_WINDOW", "window_id must be an integer.") from None
                         tabs: list[Json] = [tab for tab in objects(profile.inventory, "tabs") if tab.get("incognito") is (context == "private") and (window_id is None or tab.get("window_id") == window_id)]
-                        self.send(200, {"profile_id": profile.identity, "context": context, "tabs": tabs})
-                        return
-                raise Failure(404, "NOT_FOUND", "Unknown service route.")
+                        output = {"profile_id": profile.identity, "context": context, "tabs": tabs}
+                    else:
+                        raise Failure(404, "NOT_FOUND", "Unknown service route.")
+                self.send(200, output)
+                return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 if length < 0:
@@ -221,9 +349,39 @@ def serve(port: int) -> None:
                 body = read_json(self.rfile.read(length).decode("utf-8")) if length else {}
             except (ValueError, UnicodeDecodeError):
                 raise Failure(400, "INVALID_JSON", "Provide a UTF-8 JSON object.") from None
+            if path in ("/job", "/job-ack"):
+                with state.condition:
+                    entry = state.pending.get(string(body, "job_id"))
+                    if entry is None:
+                        raise Failure(404, "JOB_NOT_FOUND", "This service has no record of the job. Do not infer that it did not execute.")
+                    job = entry.job
+                    if any(body.get(key) != job.get(key) or isinstance(body.get(key), bool) != isinstance(job.get(key), bool) for key in ("profile_id", "context", "tab_id", "window_id")):
+                        raise Failure(409, "JOB_SELECTION_MISMATCH", "Repeat the exact original profile, privacy, tab and window selection.")
+                    if path == "/job-ack":
+                        if not entry.finished and entry.error is None:
+                            raise Failure(409, "JOB_NOT_COMPLETE", "Only a final result or terminal service error can be acknowledged.")
+                        receipt = entry.receipt_id if entry.finished else entry.error.body.get("receipt_id") if entry.error is not None else None
+                        if body.get("receipt_id") != receipt:
+                            raise Failure(409, "JOB_RECEIPT_MISMATCH", "Acknowledge only the receipt_id you actually received. Query the current result before another acknowledgement.")
+                        entry.result, entry.delivered = None, True
+                        entry.job = {key: job[key] for key in ("job_id", "profile_id", "context", "tab_id", "window_id", "kind", "deadline_at") if key in job}
+                        output = {"job_id": job["job_id"], "acknowledged": True}
+                    else:
+                        unknown = entry.outcome_unknown if entry.finished else entry.error.body.get("outcome_unknown", entry.dispatched) if entry.error is not None else entry.dispatched
+                        output = {"job_id": job["job_id"], "phase": entry.phase, "status": ("outcome_unknown" if unknown else "completed") if entry.finished else "failed" if entry.error is not None else "dispatched" if entry.dispatched else "queued", "outcome_unknown": unknown, "result_delivered": entry.delivered}
+                        output["terminal"] = entry.finished or entry.error is not None
+                        if entry.finished or entry.error is not None:
+                            output["receipt_id"] = entry.receipt_id if entry.finished else entry.error.body.get("receipt_id") if entry.error is not None else None
+                        if entry.result is not None:
+                            output["result"] = entry.result
+                        if entry.error is not None:
+                            output["error"] = entry.error.body
+                self.send(200, output)
+                return
             if path == "/find-tabs":
                 with state.condition:
-                    self.send(200, state.find_tabs(body))
+                    output = state.find_tabs(body)
+                self.send(200, output)
                 return
             if path == "/rdp":
                 self.send(200, state.rdp.execute(body))
@@ -239,43 +397,26 @@ def serve(port: int) -> None:
                     return
                 else:
                     with state.condition:
-                        self.send(200, state.inventory())
+                        output = state.inventory()
+                    self.send(200, output)
                     return
             if path == "/shutdown":
                 self.send(200, {"stopping": True})
                 with state.condition:
                     state.stopping = True
+                    for profile in state.profiles.values():
+                        if profile.peer is not None:
+                            profile.peer.close()
                     for entry in state.pending.values():
-                        entry.error = Failure(409, "SERVER_STOPPING", "Service stopping; inspect dispatched work before repeating it.", outcome_unknown=entry.dispatched)
-                        entry.ready.set()
+                        if not entry.finished and entry.error is None:
+                            entry.error = Failure(409, "SERVER_STOPPING", "Service stopping; inspect dispatched work before repeating it.", job_id=entry.job["job_id"], outcome_unknown=entry.dispatched)
+                            entry.ready.set()
                     state.condition.notify_all()
                 state.rdp.close()
                 threading.Thread(target=server.shutdown, daemon=True).start()
                 return
             if path in ("/extension/poll", "/extension/snapshot"):
-                with state.condition:
-                    profile = state.snapshot(body)
-                    acknowledged: list[Json] = []
-                    for result in objects({"results": body.get("results", [])}, "results"):
-                        job_id = string(result, "job_id")
-                        entry = state.pending.get(job_id)
-                        if entry and entry.profile == profile.identity and entry.dispatched and entry.job.get("tab_id") == result.get("tab_id"):
-                            entry.result = result
-                            entry.ready.set()
-                        acknowledged.append(job_id)
-                    if path == "/extension/snapshot" or acknowledged:
-                        self.send(200, {"acknowledged": acknowledged, "jobs": []})
-                        return
-                    _ = state.condition.wait_for(lambda: bool(profile.queue) or state.stopping or state.profiles.get(profile.identity) is not profile, timeout=12)
-                    jobs: list[Json] = []
-                    for job_id in profile.queue:
-                        entry = state.pending.get(job_id)
-                        if entry:
-                            entry.dispatched = True
-                            jobs.append(entry.job)
-                    profile.queue.clear()
-                    self.send(200, {"acknowledged": acknowledged, "jobs": jobs})
-                return
+                raise Failure(409, "EXTENSION_UPGRADE_REQUIRED", "This service requires extension WebSocket protocol 2. Load the matching extension version once.")
             if path != "/request":
                 raise Failure(404, "NOT_FOUND", "Unknown service route.")
             with state.condition:
@@ -351,27 +492,34 @@ def serve(port: int) -> None:
                 timeout = body.get("timeout_ms", 30000)
                 if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or not math.isfinite(timeout) or timeout <= 0:
                     raise Failure(400, "INVALID_TIMEOUT", "timeout_ms must be positive.")
-                job_id = str(uuid.uuid4())
+                job_id = body.get("job_id", str(uuid.uuid4()))
+                if not isinstance(job_id, str) or not re.fullmatch(r"[0-9a-fA-F-]{36}", job_id):
+                    raise Failure(400, "INVALID_JOB_ID", "job_id must be a UUID.")
+                if job_id in state.pending:
+                    raise Failure(409, "JOB_ALREADY_EXISTS", "Inspect this job with /job; it will not be executed again.", job_id=job_id)
                 job: JsonObject = {**body, "kind": operation, "mode": mode, "job_id": job_id, "profile_id": profile.identity, "context": context, "deadline_at": time.time() * 1000 + timeout}
                 if operation == "tab_control":
                     job["tab_control"] = {**body, "target_tab_id": tab_id, "context": context}
-                entry = Pending(profile.identity, job)
+                entry = Pending(profile.identity, job, waiting=True)
                 state.pending[job_id] = entry
-                profile.queue.append(job_id)
-                state.condition.notify_all()
+                profile.active[job_id] = None
+                state.deliver(profile)
             print(json.dumps({"event": "submitted", "job_id": job_id, "profile_id": profile.identity, "operation": operation}), flush=True)
-            try:
-                if not entry.ready.wait(timeout / 1000):
-                    raise Failure(504, "DEADLINE_EXCEEDED", "The deadline expired. Inspect the target before repeating dispatched work.", job_id=job_id, outcome_unknown=entry.dispatched)
+            _ = entry.ready.wait((timeout + 1000) / 1000)
+            with state.condition:
+                completed_result = entry.wait_result
+                entry.waiting, entry.wait_result = False, None
+                if completed_result is None and entry.error is None:
+                    error = Failure(504, "DEADLINE_EXCEEDED", "The wait expired. Query this job before repeating any dispatched work.", job_id=job_id, phase=entry.phase, outcome_unknown=entry.dispatched, terminal=not entry.dispatched)
+                    if not entry.dispatched:
+                        entry.error = error
+                        _ = profile.active.pop(job_id, None)
+                    raise error
                 if entry.error is not None:
                     raise entry.error
-                if entry.result is None:
-                    raise RuntimeError("Completed job has no result")
-                self.send(200, entry.result)
-            finally:
-                with state.condition:
-                    _ = state.pending.pop(job_id, None)
-            print(json.dumps({"event": "completed", "job_id": job_id}), flush=True)
+            if completed_result is None:
+                raise RuntimeError("Completed job has no result")
+            self.send(200, completed_result)
 
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.daemon_threads = True

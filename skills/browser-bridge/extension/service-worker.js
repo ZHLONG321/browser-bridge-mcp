@@ -1,8 +1,7 @@
 "use strict";
 
-importScripts("debugger-session.js", "userscript-runtime.js", "tab-control.js");
+importScripts("debugger-session.js", "userscript-runtime.js", "tab-control.js", "socket-client.js");
 
-const OFFSCREEN_URL = "offscreen.html";
 const DEFAULT_BRIDGE_BASE_URL = "http://127.0.0.1:30003";
 const PROTOCOL_VERSION = "1.3";
 const TAB_ID_PREFIX = "chrome-tab:";
@@ -17,14 +16,56 @@ const FRAME_DISCOVERY_MAX_MS = 500;
 const FRAME_CONTEXT_TIMEOUT_MS = 1000;
 const USERSCRIPT_BINDING_NAME = "__LOCAL_BRIDGE_USERSCRIPT_RPC__";
 const MAX_USERSCRIPT_RPC_CHARS = 1024 * 1024;
-const OFFSCREEN_WATCHDOG_ALARM = "browser-bridge-offscreen-watchdog";
-const OFFSCREEN_WATCHDOG_PERIOD_MINUTES = 0.5;
-const OFFSCREEN_STATUS_STALE_MS = 45_000;
+const SOCKET_WATCHDOG_ALARM = "browser-bridge-socket-watchdog";
 const EXTENSION_JOB_BATCH_TIMEOUT_MS = 17_000;
-const EXTENSION_DEBUGGER_RESET_TIMEOUT_MS = 750;
 
-let creatingOffscreenDocument = null;
-let repairingOffscreenDocument = null;
+const debuggerScopes = new WeakMap();
+function ownDebuggerLease(lease, scope) {
+  debuggerScopes.set(lease.rootSession, {scope, valid: lease.valid});
+  return lease.rootSession;
+}
+function inheritDebuggerScope(target, parent) {
+  const owner = debuggerScopes.get(parent);
+  if (owner) debuggerScopes.set(target, owner);
+  return target;
+}
+function cleanupDebuggerTarget(target) {
+  // Cleanup may release resources after a deadline, but only on the original
+  // owned attachment. It never authorizes another normal job command.
+  const owner = debuggerScopes.get(target);
+  if (!owner || !owner.valid()) throw new Error("DEBUGGER_SESSION_CHANGED: Cleanup no longer owns this attachment.");
+  const cleanup = {...target};
+  debuggerScopes.set(cleanup, {valid: owner.valid});
+  return cleanup;
+}
+function assertDebuggerScope(target) {
+  const owner = debuggerScopes.get(target);
+  owner?.scope?.check();
+  if (owner && !owner.valid()) throw new Error("DEBUGGER_SESSION_CHANGED: The job no longer owns this attachment.");
+}
+async function sendDebuggerCommand(target, method, params, onLateResult) {
+  assertDebuggerScope(target);
+  const scope = debuggerScopes.get(target)?.scope;
+  scope?.native("native:" + method);
+  const pending = chrome.debugger.sendCommand(target, method, params).then(value => {
+    try {assertDebuggerScope(target);}
+    catch (error) {
+      if (onLateResult) void Promise.resolve().then(() => onLateResult(value)).catch(() => {});
+      throw error;
+    }
+    return value;
+  });
+  let abort;
+  try {
+    const value = scope ? await Promise.race([pending, new Promise((_, reject) => {
+      abort = () => reject(scope.signal.reason);
+      scope.signal.addEventListener("abort", abort, {once: true});
+    })]) : await pending;
+    assertDebuggerScope(target);
+    return value;
+  } finally {if (abort) scope.signal.removeEventListener("abort", abort);}
+}
+
 const temporaryUserscripts = new Map();
 const userscriptRequests = new Map();
 let debuggingEnabled = false;
@@ -79,23 +120,27 @@ async function disableDebuggingFromBanner() {
   ]);
 }
 
-async function setDebuggingFromControl(enabled, targetTabId) {
+async function setDebuggingFromControl(enabled, targetTabId, scope) {
+  scope?.check();
   if (typeof enabled !== "boolean") throw new Error("Debugging setting must be a boolean");
   // Separate target enables may run concurrently. Explicit UI controls or banner
   // cancellation supersede them, but enabling another tab does not cancel a job.
   const revision = targetTabId === undefined ? ++debuggingControlRevision : debuggingControlRevision;
   await debuggerSettingsReady;
+  scope?.check();
   if (revision !== debuggingControlRevision) return { enabled: debuggingEnabled };
   const wasEnabled = debuggingEnabled;
   if (!enabled) {
     await disableDebuggingFromBanner();
     return { enabled: false };
   }
+  scope?.native("native:debugging.preference");
   await applyDebuggingSetting(true);
   try {
     if (revision !== debuggingControlRevision) return { enabled: debuggingEnabled };
     if (targetTabId !== undefined) {
       // Persist the requested preference separately from this tab's connection outcome.
+      scope?.check();
       await persistDebuggingSetting(true, revision);
       if (revision !== debuggingControlRevision || !debuggingEnabled) return { enabled: debuggingEnabled };
     }
@@ -111,10 +156,12 @@ async function setDebuggingFromControl(enabled, targetTabId) {
     }
     if (!target) throw new Error("Open a web page before enabling debugging.");
     if (revision !== debuggingControlRevision) return { enabled: debuggingEnabled };
-    const lease = await debuggerSessions.acquire(target.id);
+    scope?.check();
+    const lease = await debuggerSessions.acquire(target.id, {signal: scope?.signal, progress: scope?.progress, beforeAttach: () => scope?.native("native:debugger.attach")});
+    ownDebuggerLease(lease, scope);
     try {
       // A read-only operation establishes the attachment without reading page content.
-      await chrome.debugger.sendCommand(lease.rootSession, "Runtime.getIsolateId");
+      await sendDebuggerCommand(lease.rootSession, "Runtime.getIsolateId");
     } finally {
       await lease.release();
     }
@@ -291,10 +338,10 @@ function abortUserscriptRequests(tabId, scriptId = null) {
 }
 
 async function prepareUserscriptDebugger(rootSession) {
-  await chrome.debugger.sendCommand(rootSession, "Page.enable");
-  await chrome.debugger.sendCommand(rootSession, "Runtime.enable");
+  await sendDebuggerCommand(rootSession, "Page.enable");
+  await sendDebuggerCommand(rootSession, "Runtime.enable");
   try {
-    await chrome.debugger.sendCommand(rootSession, "Runtime.addBinding", { name: USERSCRIPT_BINDING_NAME });
+    await sendDebuggerCommand(rootSession, "Runtime.addBinding", { name: USERSCRIPT_BINDING_NAME });
   } catch (error) {
     if (!/binding.*already|already.*binding/i.test(errorText(error))) throw error;
   }
@@ -308,7 +355,7 @@ async function evaluateRuntimeExpression(target, expression, contextId = null, u
     userGesture,
   };
   if (Number.isInteger(contextId)) params.contextId = contextId;
-  const response = await chrome.debugger.sendCommand(target, "Runtime.evaluate", params);
+  const response = await sendDebuggerCommand(target, "Runtime.evaluate", params);
   return runtimeValue(response);
 }
 
@@ -342,8 +389,10 @@ async function injectTemporaryUserscript(tabId, rootSession, job) {
 
   const scripts = tabUserscripts(tabId, true);
   const previous = scripts.get(scriptId) || null;
-  const registration = await chrome.debugger.sendCommand(rootSession, "Page.addScriptToEvaluateOnNewDocument", {
+  const registration = await sendDebuggerCommand(rootSession, "Page.addScriptToEvaluateOnNewDocument", {
     source: bootstrap,
+  }, value => {
+    if (value?.identifier) return sendDebuggerCommand(cleanupDebuggerTarget(rootSession), "Page.removeScriptToEvaluateOnNewDocument", {identifier: String(value.identifier)});
   });
   const registrationId = String(registration?.identifier || "");
   if (!registrationId) throw new Error("Page.addScriptToEvaluateOnNewDocument did not return an identifier");
@@ -353,20 +402,21 @@ async function injectTemporaryUserscript(tabId, rootSession, job) {
     const current = await evaluateRuntimeExpression(rootSession, bootstrap, null, true);
     if (previous?.registrationId) {
       try {
-        await chrome.debugger.sendCommand(rootSession, "Page.removeScriptToEvaluateOnNewDocument", {
+        await sendDebuggerCommand(rootSession, "Page.removeScriptToEvaluateOnNewDocument", {
           identifier: previous.registrationId,
         });
       } catch {
         // A prior debugger detach can invalidate only the old registration; the replacement remains authoritative.
       }
     }
+    assertDebuggerScope(rootSession);
     abortUserscriptRequests(tabId, scriptId);
     const record = { scriptId, source, metadata, rpcToken, registrationId, bootstrap };
     scripts.set(scriptId, record);
     return { action: "inject", ...userscriptSummary(record), current };
   } catch (error) {
     try {
-      await chrome.debugger.sendCommand(rootSession, "Page.removeScriptToEvaluateOnNewDocument", {
+      await sendDebuggerCommand(cleanupDebuggerTarget(rootSession), "Page.removeScriptToEvaluateOnNewDocument", {
         identifier: registrationId,
       });
     } catch {
@@ -382,7 +432,7 @@ async function removeTemporaryUserscript(tabId, rootSession, scriptId) {
   if (!record) return { action: "remove", script_id: scriptId, removed: false };
   await prepareUserscriptDebugger(rootSession);
   try {
-    await chrome.debugger.sendCommand(rootSession, "Page.removeScriptToEvaluateOnNewDocument", {
+    await sendDebuggerCommand(rootSession, "Page.removeScriptToEvaluateOnNewDocument", {
       identifier: record.registrationId,
     });
   } catch {
@@ -393,6 +443,7 @@ async function removeTemporaryUserscript(tabId, rootSession, scriptId) {
   } catch {
     // Navigation can replace the current execution context while removal is in flight.
   }
+  assertDebuggerScope(rootSession);
   abortUserscriptRequests(tabId, scriptId);
   scripts.delete(scriptId);
   if (scripts.size === 0) temporaryUserscripts.delete(tabId);
@@ -558,19 +609,19 @@ async function restoreTemporaryUserscripts(tabId) {
   let lease = null;
   try {
     lease = await debuggerSessions.acquire(tabId);
-    const rootSession = lease.rootSession;
+    const rootSession = ownDebuggerLease(lease);
     await prepareUserscriptDebugger(rootSession);
     for (const record of scripts.values()) {
       if (record.registrationId) {
         try {
-          await chrome.debugger.sendCommand(rootSession, "Page.removeScriptToEvaluateOnNewDocument", {
+          await sendDebuggerCommand(rootSession, "Page.removeScriptToEvaluateOnNewDocument", {
             identifier: record.registrationId,
           });
         } catch {
           // The detached CDP session may already have discarded its registration.
         }
       }
-      const registration = await chrome.debugger.sendCommand(rootSession, "Page.addScriptToEvaluateOnNewDocument", {
+      const registration = await sendDebuggerCommand(rootSession, "Page.addScriptToEvaluateOnNewDocument", {
         source: record.bootstrap,
       });
       record.registrationId = String(registration?.identifier || "");
@@ -622,7 +673,11 @@ function recordFrameTree(frameTree, target, rootKind, frames, targets) {
   visit(frameTree, true);
 }
 
+const frameDiscoveryOwners = new Map();
 async function discoverFrameTargets(tabId, rootSession) {
+  if (frameDiscoveryOwners.has(tabId)) throw new Error("FRAME_RECOVERY_PENDING: The previous iframe session cleanup has not completed. Other tabs remain available.");
+  const owner = Symbol();
+  frameDiscoveryOwners.set(tabId, owner);
   const childSessions = new Map();
   const childAutoAttachPromises = [];
   const autoAttachParams = {
@@ -644,17 +699,20 @@ async function discoverFrameTargets(tabId, rootSession) {
     cleanedUp = true;
     const children = Array.from(childSessions.values()).reverse();
     for (const { target } of children) {
+      if (frameDiscoveryOwners.get(tabId) !== owner) return;
       try {
-        await chrome.debugger.sendCommand(target, "Target.setAutoAttach", disableAutoAttachParams);
+        await sendDebuggerCommand(cleanupDebuggerTarget(target), "Target.setAutoAttach", disableAutoAttachParams);
       } catch {
         // Child sessions can disappear during navigation; disabling the root below still clears surviving auto-attached targets.
       }
     }
+    if (frameDiscoveryOwners.get(tabId) !== owner) return;
     try {
-      await chrome.debugger.sendCommand(rootSession, "Target.setAutoAttach", disableAutoAttachParams);
+      await sendDebuggerCommand(cleanupDebuggerTarget(rootSession), "Target.setAutoAttach", disableAutoAttachParams);
     } catch {
       // If the root target detached while cleaning up, chrome.debugger.onDetach already invalidates the persistent attachment.
     }
+    if (frameDiscoveryOwners.get(tabId) === owner) frameDiscoveryOwners.delete(tabId);
   }
 
   const onEvent = (source, method, params = {}) => {
@@ -662,17 +720,17 @@ async function discoverFrameTargets(tabId, rootSession) {
     const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
     const targetInfo = params.targetInfo || {};
     if (!sessionId || targetInfo.type !== "iframe" || childSessions.has(sessionId)) return;
-    const target = { tabId, sessionId };
+    const target = inheritDebuggerScope({ tabId, sessionId }, rootSession);
     childSessions.set(sessionId, { target, targetInfo });
     lastChangeAt = Date.now();
     childAutoAttachPromises.push(
-      chrome.debugger.sendCommand(target, "Target.setAutoAttach", autoAttachParams),
+      sendDebuggerCommand(target, "Target.setAutoAttach", autoAttachParams),
     );
   };
 
   chrome.debugger.onEvent.addListener(onEvent);
   try {
-    await chrome.debugger.sendCommand(rootSession, "Target.setAutoAttach", autoAttachParams);
+    await sendDebuggerCommand(rootSession, "Target.setAutoAttach", autoAttachParams);
 
     const deadline = Date.now() + FRAME_DISCOVERY_MAX_MS;
     let awaitedChildAttachCount = 0;
@@ -698,12 +756,12 @@ async function discoverFrameTargets(tabId, rootSession) {
 
     const frames = new Map();
     const targets = new Map();
-    const rootTree = await chrome.debugger.sendCommand(rootSession, "Page.getFrameTree");
+    const rootTree = await sendDebuggerCommand(rootSession, "Page.getFrameTree");
     recordFrameTree(rootTree?.frameTree, rootSession, "root", frames, targets);
 
     for (const { target, targetInfo } of childSessions.values()) {
       try {
-        const tree = await chrome.debugger.sendCommand(target, "Page.getFrameTree");
+        const tree = await sendDebuggerCommand(target, "Page.getFrameTree");
         recordFrameTree(tree?.frameTree, target, "oopif", frames, targets);
         const rootFrameId = typeof tree?.frameTree?.frame?.id === "string" ? tree.frameTree.frame.id : "";
         const recorded = rootFrameId ? frames.get(rootFrameId) : null;
@@ -732,6 +790,7 @@ async function discoverFrameTargets(tabId, rootSession) {
         targets.set(frameId, target);
       }
     }
+    assertDebuggerScope(rootSession);
     cleanupTransferred = true;
     return { frames: Array.from(frames.values()), targets, cleanup };
   } finally {
@@ -763,7 +822,7 @@ async function resolveDefaultFrameContext(tabId, target, frameId) {
   };
   chrome.debugger.onEvent.addListener(onEvent);
   try {
-    await chrome.debugger.sendCommand(target, "Runtime.enable");
+    await sendDebuggerCommand(target, "Runtime.enable");
     return await contextPromise;
   } finally {
     clearTimeout(timer);
@@ -771,7 +830,8 @@ async function resolveDefaultFrameContext(tabId, target, frameId) {
   }
 }
 
-async function executeJob(job) {
+async function executeJob(job, scope) {
+  scope.check();
   if (job.profile_id !== await profileIdentity()) throw new Error("Profile selection mismatch");
   if (!["normal", "private"].includes(job.context)) throw new Error("Explicit window privacy context is required");
   if (job.kind === "debugging") {
@@ -790,7 +850,7 @@ async function executeJob(job) {
       if (job.context === "private" && !await chrome.extension.isAllowedIncognitoAccess()) {
         throw new Error("Enable Allow in Incognito / Allow in InPrivate for this extension");
       }
-      await setDebuggingFromControl(true, nativeTabId(job.tab_id));
+      await setDebuggingFromControl(true, nativeTabId(job.tab_id), scope);
     }
     const state = await debuggingState();
     const tabs = await chrome.tabs.query({});
@@ -823,6 +883,7 @@ async function executeJob(job) {
         if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("Use an HTTP(S) page URL");
         url = parsed.href;
       }
+      scope.native("native:windows.create");
       const created = await chrome.windows.create({url, incognito, focused: false, type: "normal"});
       value = {window_id: created.id, incognito: created.incognito, focused: created.focused,
         tabs: (created.tabs || []).map(tab => ({tab_id: "chrome-tab:" + tab.id, window_id: tab.windowId, incognito: tab.incognito}))};
@@ -830,6 +891,7 @@ async function executeJob(job) {
       if (!Number.isInteger(job.window_id)) throw new Error("An exact window_id is required");
       const target = await chrome.windows.get(job.window_id);
       if (target.focused && job.allow_foreground !== true) throw new Error("Closing the foreground window requires explicit foreground permission");
+      scope.native("native:windows.remove");
       await chrome.windows.remove(job.window_id);
       value = {window_id: job.window_id, closed: true};
     } else {
@@ -854,7 +916,7 @@ async function executeJob(job) {
     if (job.tab_control?.action === "reload" && job.tab_control.target_tab_id !== job.tab_id) {
       throw new Error("Reload target must match the dispatched tab");
     }
-    const value = await tabControl.run({ ...job.tab_control, window_id: initialTab.windowId });
+    const value = await tabControl.run({ ...job.tab_control, window_id: initialTab.windowId }, scope);
     return { tab_id: job.tab_id, job_id: job.job_id, url: initialTab.url, title: initialTab.title || "", results: [{ index: 0, status: "exited", value }], frames: [], error: null, events: [] };
   }
   const requestedEvents = new Set(job.event_methods || []);
@@ -882,8 +944,9 @@ async function executeJob(job) {
   };
 
   try {
-    debuggerLease = await debuggerSessions.acquire(tabId);
-    rootSession = debuggerLease.rootSession;
+    scope.check();
+    debuggerLease = await debuggerSessions.acquire(tabId, {signal: scope.signal, progress: scope.progress, beforeAttach: () => scope.native("native:debugger.attach")});
+    rootSession = ownDebuggerLease(debuggerLease, scope);
     if (requestedEvents.size > 0) chrome.debugger.onEvent.addListener(onEvent);
 
     const results = [];
@@ -899,6 +962,7 @@ async function executeJob(job) {
         contextId = await resolveDefaultFrameContext(tabId, target, job.frame_id);
       }
       for (let index = 0; index < job.scripts.length; index += 1) {
+        scope.check();
         try {
           const params = {
             expression: runtimeEvaluateExpression(job.scripts[index]),
@@ -907,7 +971,7 @@ async function executeJob(job) {
             userGesture: job.allow_foreground === true,
           };
           if (contextId !== null) params.contextId = contextId;
-          const response = await chrome.debugger.sendCommand(evaluationTarget, "Runtime.evaluate", params);
+          const response = await sendDebuggerCommand(evaluationTarget, "Runtime.evaluate", params);
           results.push({ index, status: "exited", value: boundedJsonValue(runtimeValue(response)) });
         } catch (error) {
           results.push({ index, status: "failed", error: errorText(error) });
@@ -926,12 +990,13 @@ async function executeJob(job) {
       }
     } else if (job.kind === "cdp") {
       for (let index = 0; index < job.commands.length; index += 1) {
+        scope.check();
         const command = job.commands[index];
         try {
           const target = command.session_id
-            ? { tabId, sessionId: command.session_id }
+            ? inheritDebuggerScope({ tabId, sessionId: command.session_id }, rootSession)
             : rootSession;
-          const value = await chrome.debugger.sendCommand(target, command.method, command.params || {});
+          const value = await sendDebuggerCommand(target, command.method, command.params || {});
           // Encoded screenshot bytes must arrive intact, including large pages.
           // Other CDP results retain the normal text-result bound.
           results.push({ index, status: "exited", value: command.method === "Page.captureScreenshot" ? value : boundedJsonValue(value) });
@@ -972,192 +1037,89 @@ async function executeJob(job) {
 }
 
 class ExtensionJobTimeoutError extends Error {
-  constructor(timeoutMs) {
-    super("browser_job_timeout: extension execute_jobs exceeded " + timeoutMs + "ms");
-    this.name = "ExtensionJobTimeoutError";
-  }
+  constructor() {super("DEADLINE_EXCEEDED: Browser job deadline expired; inspect the job before repeating a mutation."); this.name = "ExtensionJobTimeoutError";}
 }
 
-async function resetDebuggerAfterJobTimeout(tabId) {
-  try {
-    await Promise.race([
-      debuggerSessions.reset(tabId),
-      sleep(EXTENSION_DEBUGGER_RESET_TIMEOUT_MS),
-    ]);
-  } catch {
-    // Best effort: return a bounded failed job even if cleanup itself is slow.
-  }
-}
-
-async function executeJobWithinDeadline(job, deadlineAt, timeoutMs) {
-  const remaining = Math.max(0, deadlineAt - Date.now());
-  if (remaining === 0) {
-    if (job.tab_id && !["tab_control", "window_control"].includes(job.kind)) await resetDebuggerAfterJobTimeout(nativeTabId(job.tab_id));
-    throw new ExtensionJobTimeoutError(timeoutMs);
-  }
-  let timer = null;
-  try {
-    return await Promise.race([
-      executeJob(job),
-      new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new ExtensionJobTimeoutError(timeoutMs)), remaining);
-      }),
-    ]);
-  } catch (error) {
-    if (error?.name === "ExtensionJobTimeoutError" && job.tab_id && !["tab_control", "window_control"].includes(job.kind)) {
-      await resetDebuggerAfterJobTimeout(nativeTabId(job.tab_id));
-    }
-    throw error;
-  } finally {
-    if (timer !== null) clearTimeout(timer);
-  }
-}
-
-async function executeJobs(jobs, timeoutMs = EXTENSION_JOB_BATCH_TIMEOUT_MS) {
+async function executeJobs(jobs, timeoutMs = EXTENSION_JOB_BATCH_TIMEOUT_MS, progress = () => {}, controlRevision = debuggingControlRevision) {
   const completed = [];
-  const deadlineAt = Date.now() + Math.max(1, Number(timeoutMs) || EXTENSION_JOB_BATCH_TIMEOUT_MS);
   for (const job of jobs || []) {
+    const controller = new AbortController();
+    const deadline = job.deadline_at ?? Date.now() + timeoutMs;
+    let dispatched = false, phase = "accepted", timer;
+    const scope = {
+      signal: controller.signal,
+      progress(value) {phase = value; progress(value);},
+      check() {
+        const needsDebugger = !["tab_control", "window_control"].includes(job.kind) && !(job.kind === "debugging" && job.action === "status");
+        if (needsDebugger && controlRevision !== debuggingControlRevision && !controller.signal.aborted) controller.abort(new Error("DEBUGGING_CONTROL_CHANGED: A manual control superseded this accepted job."));
+        if (Date.now() >= deadline && !controller.signal.aborted) controller.abort(new ExtensionJobTimeoutError());
+        if (controller.signal.aborted) throw controller.signal.reason;
+      },
+      native(value) {this.check(); dispatched = true; this.progress(value);},
+    };
     try {
-      completed.push(await executeJobWithinDeadline(job, deadlineAt, timeoutMs));
-    } catch (error) {
-      let tab = null;
+      scope.check();
+      timer = setTimeout(() => controller.abort(new ExtensionJobTimeoutError()), Math.max(1, deadline - Date.now()));
+      let abort;
       try {
-        if (job.tab_id) tab = await chrome.tabs.get(nativeTabId(job.tab_id));
-      } catch {
-        // Return a bounded failed result even when the target disappeared before attachment.
-      }
-      const count = job.kind === "cdp"
-        ? (job.commands || []).length
-        : job.kind === "javascript"
-          ? (job.scripts || []).length
-          : ["userscript", "tab_control", "window_control", "debugging"].includes(job.kind)
-            ? 1
-            : 0;
-      completed.push({
-        tab_id: job.tab_id,
-        job_id: job.job_id,
-        url: tab?.url || "about:blank",
-        title: tab?.title || "",
-        results: Array.from({ length: count }, (_, index) => ({
-          index,
-          status: "failed",
-          error: errorText(error),
-        })),
-        frames: [],
-        error: job.kind === "list_frames" ? errorText(error) : null,
-        events: [],
+        completed.push(await Promise.race([executeJob(job, scope), new Promise((_, reject) => {
+          abort = () => reject(controller.signal.reason);
+          controller.signal.addEventListener("abort", abort, {once: true});
+        })]));
+      } finally {if (abort) controller.signal.removeEventListener("abort", abort);}
+    } catch (error) {
+      const count = job.kind === "cdp" ? (job.commands || []).length : job.kind === "javascript" ? (job.scripts || []).length : job.kind === "list_frames" ? 0 : 1;
+      completed.push({job_id: job.job_id, ...(job.tab_id === undefined ? {} : {tab_id: job.tab_id}),
+        results: Array.from({length: count}, (_, index) => ({index, status: "failed", error: errorText(error)})),
+        frames: [], events: [], error: job.kind === "list_frames" ? errorText(error) : null,
+        phase, outcome_unknown: dispatched,
       });
+    } finally {
+      clearTimeout(timer);
+      if (!controller.signal.aborted) controller.abort(new Error("JOB_FINISHED: Do not submit further commands."));
+      // A job timeout never detaches a persistent attachment shared by recording
+      // or userscripts. In-flight native calls can finish; later steps are fenced.
     }
   }
   return completed;
 }
 
-async function hasOffscreenDocument() {
-  if (chrome.runtime.getContexts) {
-    const contexts = await chrome.runtime.getContexts({
-      contextTypes: ["OFFSCREEN_DOCUMENT"],
-      documentUrls: [chrome.runtime.getURL(OFFSCREEN_URL)],
-    });
-    return contexts.length > 0;
-  }
-  const clientsList = await clients.matchAll();
-  return clientsList.some((client) => client.url === chrome.runtime.getURL(OFFSCREEN_URL));
-}
-
-function currentExtensionVersion() {
-  return String(chrome.runtime.getManifest?.().version || "");
-}
-
-async function ensureOffscreenDocument() {
-  if (await hasOffscreenDocument()) return;
-  if (!creatingOffscreenDocument) {
-    creatingOffscreenDocument = chrome.offscreen.createDocument({
-      url: OFFSCREEN_URL,
-      reasons: ["WORKERS"],
-      justification: "Run the Local Bridge WebSocket worker without requiring a visible extension page.",
-    }).then(async () => {
-      const version = currentExtensionVersion();
-      if (version) await chrome.storage.local.set({ bridgeOffscreenVersion: version });
-    }).finally(() => {
-      creatingOffscreenDocument = null;
-    });
-  }
-  await creatingOffscreenDocument;
-}
-
-async function ensureOffscreenWatchdogAlarm() {
-  if (!chrome.alarms?.get || !chrome.alarms?.create) return;
-  try {
-    const existing = await chrome.alarms.get(OFFSCREEN_WATCHDOG_ALARM);
-    if (!existing) {
-      chrome.alarms.create(OFFSCREEN_WATCHDOG_ALARM, {
-        periodInMinutes: OFFSCREEN_WATCHDOG_PERIOD_MINUTES,
-      });
-    }
-  } catch {
-    // Alarm setup is a recovery aid and must not block normal extension startup.
-  }
-}
-
-async function recreateOffscreenDocument() {
-  if (!repairingOffscreenDocument) {
-    repairingOffscreenDocument = (async () => {
-      if (creatingOffscreenDocument) await creatingOffscreenDocument;
-      await chrome.storage.local.set({ bridgeUpdatedAt: 0 });
-      if (await hasOffscreenDocument()) {
-        try {
-          await chrome.offscreen.closeDocument();
-        } catch (error) {
-          if (await hasOffscreenDocument()) throw error;
-        }
-      }
-      await ensureOffscreenDocument();
-    })().finally(() => {
-      repairingOffscreenDocument = null;
-    });
-  }
-  await repairingOffscreenDocument;
-}
-
-async function ensureCurrentOffscreenDocument() {
-  if (!await hasOffscreenDocument()) {
-    await ensureOffscreenDocument();
-    return "created";
-  }
-  const currentVersion = currentExtensionVersion();
-  if (!currentVersion) return "healthy";
-  const { bridgeOffscreenVersion = "" } = await chrome.storage.local.get({ bridgeOffscreenVersion: "" });
-  if (String(bridgeOffscreenVersion || "") !== currentVersion) {
-    await recreateOffscreenDocument();
-    return "recreated_version_mismatch";
-  }
-  return "healthy";
-}
-
-async function recoverStaleOffscreenDocument(now = Date.now()) {
-  const lifecycle = await ensureCurrentOffscreenDocument();
-  if (lifecycle !== "healthy") return lifecycle;
-  const { bridgeUpdatedAt = 0 } = await chrome.storage.local.get({ bridgeUpdatedAt: 0 });
-  const updatedAt = Number(bridgeUpdatedAt) || 0;
-  if (updatedAt > 0 && now - updatedAt <= OFFSCREEN_STATUS_STALE_MS) return "healthy";
-  await recreateOffscreenDocument();
-  return "recreated";
-}
-
 async function resolveStoredBridgeBaseUrl() {
-  const stored = await chrome.storage.local.get({ bridgeBaseUrl: DEFAULT_BRIDGE_BASE_URL });
-  const configured = String(stored.bridgeBaseUrl || "").trim().replace(/\/$/, "");
-  return configured || DEFAULT_BRIDGE_BASE_URL;
+  const stored = await chrome.storage.local.get({bridgeBaseUrl: DEFAULT_BRIDGE_BASE_URL});
+  return String(stored.bridgeBaseUrl || DEFAULT_BRIDGE_BASE_URL).trim().replace(/\/$/, "");
 }
 
-async function initializeBridgeRuntime({ forceRecreateOffscreen = false } = {}) {
-  await resolveStoredBridgeBaseUrl();
-  if (forceRecreateOffscreen && await hasOffscreenDocument()) {
-    await recreateOffscreenDocument();
-  } else {
-    await ensureCurrentOffscreenDocument();
+const jobLanes = new Map();
+async function executeSocketJob(job, progress) {
+  const controlRevision = debuggingControlRevision;
+  // Status must remain available while native execution for one tab is blocked.
+  const key = job.kind === "debugging" && job.action === "status" ? null : job.tab_id || "window:" + job.context;
+  const previous = key === null ? Promise.resolve() : jobLanes.get(key) || Promise.resolve();
+  const work = previous.catch(() => {}).then(async () => {
+    progress("running");
+    return (await executeJobs([job], Math.max(1, job.deadline_at - Date.now()), progress, controlRevision))[0];
+  });
+  if (key !== null) {
+    jobLanes.set(key, work);
+    void work.finally(() => {if (jobLanes.get(key) === work) jobLanes.delete(key);}).catch(() => {});
   }
-  await ensureOffscreenWatchdogAlarm();
+  return await work;
+}
+
+const socketTransport = globalThis.BrowserBridgeSocket.create({
+  baseUrl: resolveStoredBridgeBaseUrl,
+  inventory: transportSnapshot,
+  execute: executeSocketJob,
+  status: async (state, error) => chrome.storage.local.set({bridgeStatus: state, bridgeLastError: error, bridgeUpdatedAt: Date.now()}),
+});
+
+async function initializeBridgeRuntime() {
+  // Close a pre-upgrade offscreen page once; it must not keep polling the service.
+  const contexts = await chrome.runtime.getContexts?.({contextTypes: ["OFFSCREEN_DOCUMENT"]});
+  if (contexts?.some(context => context.documentUrl === chrome.runtime.getURL("offscreen.html"))) await chrome.offscreen.closeDocument();
+  await chrome.alarms.clear("browser-bridge-offscreen-watchdog");
+  await chrome.alarms.create(SOCKET_WATCHDOG_ALARM, {periodInMinutes: 1});
+  void socketTransport.start();
 }
 
 async function handleMessage(message, sender = null) {
@@ -1205,6 +1167,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
 });
 
 chrome.debugger.onDetach.addListener((source, reason) => {
+  if (Number.isInteger(source?.tabId) && !source.sessionId) frameDiscoveryOwners.delete(source.tabId);
   if (reason === "canceled_by_user") {
     void disableDebuggingFromBanner().catch(() => { console.warn("Browser Bridge could not persist debugging disabled state"); });
     return;
@@ -1216,6 +1179,7 @@ chrome.debugger.onDetach.addListener((source, reason) => {
 
 chrome.tabs.onRemoved?.addListener((tabId) => {
   if (!Number.isInteger(tabId)) return;
+  frameDiscoveryOwners.delete(tabId);
   temporaryUserscripts.delete(tabId);
   abortUserscriptRequests(tabId);
 });
@@ -1233,14 +1197,14 @@ async function transportSnapshot() {
 }
 
 function notifyTransportTabsChanged() {
-  void chrome.runtime.sendMessage({ type: "bridge_tabs_changed" }).catch(() => {});
+  void socketTransport.publish();
 }
 for (const event of [chrome.tabs.onCreated, chrome.tabs.onRemoved, chrome.tabs.onUpdated, chrome.tabs.onActivated, chrome.tabs.onMoved, chrome.tabs.onReplaced]) {
   event?.addListener(notifyTransportTabsChanged);
 }
 
 chrome.runtime.onInstalled.addListener((details) => {
-  void initializeBridgeRuntime({ forceRecreateOffscreen: details?.reason === "update" });
+  void initializeBridgeRuntime();
 });
 chrome.runtime.onStartup.addListener(() => {
   void initializeBridgeRuntime();
@@ -1249,12 +1213,11 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   // Debugging writes are owned by this worker; replaying their delayed storage
   // events as new controls could undo a more recent user cancellation.
   if (areaName === "local" && changes.bridgeBaseUrl) {
-    void ensureCurrentOffscreenDocument();
-    void chrome.runtime.sendMessage({ type: "bridge_config_changed" }).catch(() => {});
+    socketTransport.reconnect();
   }
 });
 chrome.alarms?.onAlarm?.addListener((alarm) => {
-  if (alarm?.name === OFFSCREEN_WATCHDOG_ALARM) void recoverStaleOffscreenDocument();
+  if (alarm?.name === SOCKET_WATCHDOG_ALARM) void socketTransport.start();
 });
 
 void chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });

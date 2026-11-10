@@ -1,6 +1,6 @@
 # MCP installation and tools
 
-Browser Bridge provides a local stdio MCP server implemented with the official TypeScript SDK. The AI client launches it as a child process and discovers its tools. The MCP layer calls the same Node.js client and guarded Windows helpers as the CLI; extensions continue connecting to the local HTTP service.
+Browser Bridge provides a local stdio MCP server implemented with the official TypeScript SDK. The AI client launches it as a child process and discovers its tools. The MCP layer calls the same Node.js client and guarded Windows helpers as the CLI. A separate shared service accepts local HTTP calls and routes them over authenticated extension WebSockets.
 
 Use MCP for simple independent calls. Coordinated calls, programmatic request construction and request/result processing must use a saved script importing the [Node.js/Python clients](clients.md) directly. Do not orchestrate those workflows through MCP/CLI calls or embed JavaScript/Python in shell commands; save the script first, then invoke its file.
 
@@ -51,7 +51,7 @@ By default both layers use `http://127.0.0.1:30003`. For a different existing Br
 
 ## Tools
 
-MCP tool API 2.2 exposes 45 tools named by resource and action. It replaces the previous names and combined action tools. Reconnect the MCP client after updating the installed skill to discover the new tool list. Screenshot image transport requires Chromium extension 1.0.5+; reload an older unpacked extension. Recording uses existing native operations and needs no additional extension update or HTTP service restart. Existing CLI commands, importable client functions and HTTP actions keep their names.
+MCP tool API 2.3 exposes 46 tools named by resource and action, including `browser_job_status`. Reconnect the MCP client after updating the installed skill to discover the tool list. Service and extension prerequisites are maintained in [Setup](setup.md#connection-recovery). Existing CLI commands, importable client functions and HTTP actions keep their names.
 
 Each fixed action has its own input schema. Do not send `action` or `userscript_action`: the adapter supplies the fixed HTTP action. Only action-relevant fields are accepted. Chromium tab/window changes, debugging enable and userscript changes require `mode: authorized_mutation`; foreground tab activation also requires `allow_foreground: true`. Arbitrary JavaScript, CDP and Firefox APIs/packets remain native capabilities whose effects must respect task authorization.
 
@@ -60,6 +60,7 @@ Each fixed action has its own input schema. Do not send `action` or `userscript_
 | `bridge_service_status`, `bridge_service_start` | Inspect or explicitly start/reuse the HTTP service |
 | `browser_profile_list`, `browser_connection_list` | List extension profiles or existing extension/RDP connections |
 | `browser_tab_find`, `browser_tab_list` | Reverse lookup target metadata or list one explicit profile/privacy/window |
+| `browser_job_status` | Inspect an uncertain job by ID and its exact original selection without rerunning it |
 | `browser_screenshot_full_page`, `browser_screenshot_viewport` | Capture the full top document or current viewport to a compressed image file |
 | `browser_screenshot_element`, `browser_screenshot_rect` | Capture caller-resolved element bounds or an explicit rectangle, with optional padding |
 | `browser_recording_start`, `browser_recording_status` | Start native background video recording or inspect one explicit job and its notification state |

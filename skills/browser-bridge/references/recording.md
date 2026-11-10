@@ -15,6 +15,8 @@ Start and stop require `mode: 'authorized_mutation'`. Start accepts optional `du
 
 States are `starting`, `recording`, `saving`, `completed`, `unsupported` and `failed`. Resolve an uncertain start using the same job's status; never replay a timed-out start or native stop. Starting a second recorder while the browser already has one preserves the native busy error and does not stop the existing recording. A missing worker, lost connection, disabled debugging, changed window/privacy association or closed target is a failure, not proof that recording is unsupported. Failed jobs retain partial files and unread native stream handles for explicit recovery; no automatic retry, deletion or transcoding occurs.
 
+Transport failures preserve `outcome_unknown` and `bridge_job_id`; a failed stop can also expose `stop_bridge_job_id`. These identify the underlying browser operation, separate from the recording ID. Query `browser_job_status` with that Bridge job ID and its exact original profile/privacy/tab/window selection before deciding how to recover. A completed recording-worker process or an expired HTTP wait alone does not establish that a native start or stop did not execute.
+
 Chromium support is established by the actual `Page.startScreenRecording` response. A missing native method or explicit missing native codec support returns `status: 'unsupported', supported: false` with the reason. Other errors retain their cause. The current Firefox Bridge has no equivalent native video-recording operation and returns `unsupported`; it does not substitute timed screenshots, desktop recording or a permission picker.
 
 ## Original video files

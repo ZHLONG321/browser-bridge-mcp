@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Browser Bridge",
-  "version": "1.0.5",
+  "version": "1.1.0",
   "description": "Background browser automation with explicit profile and normal/private window selection.",
   "incognito": "spanning",
   "permissions": [
@@ -26,5 +26,6 @@
   "action": {
     "default_title": "Browser Bridge",
     "default_popup": "popup.html"
-  }
+  },
+  "minimum_chrome_version": "116"
 }
