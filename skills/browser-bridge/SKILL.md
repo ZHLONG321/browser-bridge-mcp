@@ -7,6 +7,8 @@ description: Operate connected Chrome, Edge and Firefox in the background throug
 
 Operate in the background. Do not activate tabs, focus or restore windows, use desktop input, or bring a page to the front without the user's explicit permission. Pass `allow_foreground: true` only for an authorized foreground operation; arbitrary JavaScript and CDP must follow the same rule.
 
+**Close task-created pages as soon as they are no longer needed, unless the user explicitly authorizes keeping them open.** This includes temporary pages created for inspection, testing or failed attempts, through MCP, CLI or clients, in normal or private windows. Record each created tab's exact `profile_id`, privacy context, `window_id` and `tab_id`, and close only those task-created tabs during cleanup. Preserve pre-existing and user-created tabs. Finish closing temporary pages before reporting task completion; if execution is interrupted, close them when the task resumes. Creating a temporary page does not authorize leaving it open.
+
 ## MCP installation and calls
 
 For installation from this repository, follow [MCP installation](references/mcp.md): install this entire skill directory and its locked Node.js dependencies, then register `scripts/mcp/server.mjs` as a stdio server in the active client. Resolve its actual absolute path and the Node executable yourself; the repository URL is enough information from the user. No MCP registry publication is required. Browser extension loading and permissions remain separate user actions.
