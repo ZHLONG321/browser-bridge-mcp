@@ -1,11 +1,17 @@
 ---
 name: browser-bridge
-description: Operate connected Chrome, Edge and Firefox in the background. Discover profiles and tabs, use Chromium JavaScript/CDP/userscripts or Firefox WebExtension APIs and native RDP. Includes a Windows HTTP CLI and importable Node.js/Python clients.
+description: Operate connected Chrome, Edge and Firefox in the background through MCP tools, a Windows HTTP CLI or Node.js/Python clients. Discover profiles and tabs, use Chromium JavaScript/CDP/userscripts or Firefox WebExtension APIs and native RDP.
 ---
 
 # Browser Bridge
 
 Operate in the background. Do not activate tabs, focus or restore windows, use desktop input, or bring a page to the front without the user's explicit permission. Pass `allow_foreground: true` only for an authorized foreground operation; arbitrary JavaScript and CDP must follow the same rule.
+
+## MCP installation and calls
+
+For installation from this repository, follow [MCP installation](references/mcp.md): install this entire skill directory and its locked Node.js dependencies, then register `scripts/mcp/server.mjs` as a stdio server in the active client. Resolve its actual absolute path and the Node executable yourself; the repository URL is enough information from the user. No MCP registry publication is required. Browser extension loading and permissions remain separate user actions.
+
+When the MCP tools are available, use them directly for ordinary calls. `bridge_status` inspects the local service and `bridge_start_service` explicitly starts or reuses it; MCP startup itself opens no browser and starts no HTTP service. `browser_profiles`, `browser_discover`, `browser_find_tabs` and `browser_tabs` resolve targets. Browser-operation tools use the same field names and selection rules as the clients below. Windows background window creation uses `browser_create_edge_window` or `browser_create_firefox_window`, with the existing native-helper prerequisites. Use importable clients when code composition is needed; installing MCP does not remove the CLI or change its contracts.
 
 ## Select the right login session
 
@@ -42,12 +48,13 @@ scripts\browser-bridge.bat request <profile-id> private "<request.json>"
 
 The server launcher prefers an existing compatible Node.js runtime, then Python 3.10+. It starts the server without a console window. If neither is usable, stop and give the installation instructions in [Setup](references/setup.md); never download a runtime automatically. The HTTP CLI uses Windows `cmd` and `curl.exe`, with no Node/Python dependency. Missing curl also stops with instructions. Default service URL: `http://127.0.0.1:30003`; override with `BROWSER_BRIDGE_URL` and the server's `--port` option.
 
-Use the CLI directly for simple requests. Compose complex work in ordinary code with [Node.js or Python clients](references/clients.md); no fixed sequence or operation-count limit is imposed. Write and execute a needed helper in one execution-tool call when no intermediate judgment is needed. Do not reread a saved helper merely to confirm its write.
+Use available MCP tools for simple requests, or the CLI when MCP is not configured. Compose complex work in ordinary code with [Node.js or Python clients](references/clients.md); no fixed sequence or operation-count limit is imposed. Write and execute a needed helper in one execution-tool call when no intermediate judgment is needed. Do not reread a saved helper merely to confirm its write.
 
 Store task-generated code, requests, logs, and exports under the owning project's `tmp/<current session id>/`. Persistent skill code and the extension stay here. Never delete temporary files as routine cleanup.
 
 | Need | Read |
 | --- | --- |
+| Install/register MCP, stdio configuration, tool names and service lifecycle | [MCP](references/mcp.md) |
 | Install, connect, hidden server startup, private access | [Setup](references/setup.md) |
 | Free composition, client imports and examples | [Clients](references/clients.md) |
 | Operation names, request fields, errors and deadlines | [Operations](references/operations.md) |

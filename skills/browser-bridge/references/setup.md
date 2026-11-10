@@ -1,5 +1,7 @@
 # Setup and connection
 
+For MCP installation, dependencies and client registration, read [MCP installation and tools](mcp.md). MCP needs Node.js 20+/npm and exposes tools over stdio. Its explicit `bridge_start_service` tool starts or reuses the same HTTP service described below; it does not load extensions or grant browser permissions. The standard-library runtime instructions below apply to the HTTP service and standalone clients, independently of MCP dependencies.
+
 ## Runtime and server
 
 The Windows server launcher checks Node.js for built-in `fetch`, `util.parseArgs` and `AbortSignal.timeout`, then Python 3.10+, then the Windows `py -3` launcher. It uses only their standard libraries. It does not run package installers or download anything. Install a current LTS runtime yourself from [Node.js](https://nodejs.org/en/download) or [Python](https://www.python.org/downloads/windows/), or provide a portable runtime and make its executable discoverable on PATH. Reopen the terminal after changing PATH.

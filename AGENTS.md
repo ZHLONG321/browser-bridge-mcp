@@ -1,6 +1,6 @@
 # Browser Bridge MCP
 
-This repository owns the standalone browser extensions, loopback HTTP service, clients, Windows native guards and browser-bridge skill. Node.js and Python implement the same service protocol. The repository name does not imply an MCP stdio transport; there is currently no stdio entry point.
+This repository owns the standalone browser extensions, loopback HTTP service, MCP stdio adapter, clients, Windows native guards and browser-bridge skill. Node.js and Python implement the same HTTP service protocol. The MCP adapter uses the official SDK and delegates to the Node client and existing guarded helpers; do not duplicate browser operations or change extension wire contracts in that adapter. Its entry point is `skills/browser-bridge/scripts/mcp/server.mjs`. Keep stdout reserved for MCP messages and use stderr for diagnostics. The shared HTTP service starts only through its explicit start tool and survives MCP disconnects.
 
 The GitHub owner is `ZHLONG321`, and the repository is private. Use `git@github.com:ZHLONG321/browser-bridge-mcp.git` for its remote. Confirm the authenticated account matches the intended owner before creating repositories; a successful Git credential lookup alone does not establish the intended identity.
 
@@ -16,4 +16,4 @@ Core servers and clients use standard libraries. Optional Windows Edge profile a
 
 The installed browser-bridge skill is a separate copy from this checkout. Repository changes do not automatically update an installed skill, reload extensions or restart a running service. Explain the applicable reload or installation step when changing those components.
 
-The sole installable skill lives in `skills/browser-bridge/`, including its extensions, scripts and references. Keep that directory self-contained and preserve internal relative paths. The root README is the installation entry point: a request containing only the repository URL must let an installing agent discover the skill and its setup instructions without asking for a skill path or name. Run documented skill commands from that directory.
+The sole installable skill lives in `skills/browser-bridge/`, including its extensions, scripts, references and locked MCP dependencies. Keep that directory self-contained and preserve internal relative paths. The root README is the installation entry point: a request containing only the repository URL must let an installing agent discover the skill, install its MCP dependencies and register it in the current client without asking for a skill path or name. Follow `skills/browser-bridge/references/mcp.md` and compute executable/entry paths on the installation machine. Run documented skill commands from that directory.

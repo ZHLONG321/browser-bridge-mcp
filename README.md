@@ -1,6 +1,6 @@
 # Browser Bridge MCP
 
-Control Chrome, Edge and Firefox in the background through browser extensions and a local HTTP service. Each operation selects its profile, normal/private context and window explicitly.
+Control Chrome, Edge and Firefox in the background through MCP tools, browser extensions and a local HTTP service. CLI and importable clients are also available. Each operation selects its profile, normal/private context and window explicitly.
 
 ## Install with an AI agent
 
@@ -13,8 +13,8 @@ The repository URL is all you need to provide. The repository contains one skill
 ### Instructions for the installing agent
 
 1. Install the sole skill from **`skills/browser-bridge`**, named **`browser-bridge`**. Resolve this path from the repository yourself; do not ask the user to supply a skill name, subdirectory or installation command.
-2. Use your environment's skill installer when available, passing this repository and `skills/browser-bridge` as its selected path. Otherwise copy that entire directory into the active agent's supported user skill directory. Keep `SKILL.md`, `references`, `scripts`, `extension` and `extension-firefox` together. Do not install the repository root as a skill. If a copy already exists, inspect it and preserve local changes before updating it.
-3. Read the installed `SKILL.md` and [setup guide](skills/browser-bridge/references/setup.md). Follow their runtime and service instructions, and explain any agent restart needed to discover the installed skill. Installing the skill does not require opening a browser or granting extension permissions.
+2. Use your environment's skill installer when available, passing this repository and `skills/browser-bridge` as its selected path. Otherwise copy that entire directory into the active agent's supported user skill directory. Include `package.json`, `package-lock.json` and all bundled resources. Do not install the repository root as a skill. If a copy already exists, inspect it and preserve local changes before updating it.
+3. Read the installed `SKILL.md` and [MCP installation guide](skills/browser-bridge/references/mcp.md). Install the locked dependencies with Node.js 20+/npm, then register the stdio MCP server in the current client using computed absolute paths. Resolve the skill location and configuration format yourself; the user need not supply extra installation parameters. Explain any client reload needed. Installing the skill and registering MCP do not require opening a browser or granting extension permissions.
 4. When the user is ready to connect a browser, discover available browsers as the skill describes. Compute extension picker paths from the actual installed directory and give expanded, verified absolute paths. Browser extension loading and private-window permissions require user action; never claim they are granted by copying the skill.
 
 Public repositories can be downloaded without GitHub credentials. While this repository is private, use existing credentials with access to `ZHLONG321/browser-bridge-mcp`; ask for access only if authentication fails. Do not change repository visibility.
@@ -24,15 +24,21 @@ Public repositories can be downloaded without GitHub credentials. While this rep
 ```text
 skills/browser-bridge/
   SKILL.md
+  package.json
+  package-lock.json
   references/
-  scripts/
+  scripts/mcp/
+  scripts/node/
+  scripts/python/
+  scripts/windows/
   extension/
   extension-firefox/
 ```
 
-The skill includes Node.js and Python services and clients, a Windows HTTP CLI, and Windows native helpers for creating browser windows without taking focus. The current transport is loopback HTTP; there is no MCP stdio entry point.
+The MCP entry point is `scripts/mcp/server.mjs` inside the installed skill. It uses stdio for the AI client and the existing loopback HTTP service for browser extensions. MCP dependencies are locked; the core HTTP services and clients still use standard libraries.
 
-- [Setup and connection](skills/browser-bridge/references/setup.md)
+- [MCP installation and tools](skills/browser-bridge/references/mcp.md)
+- [Browser setup and connection](skills/browser-bridge/references/setup.md)
 - [Node.js and Python clients](skills/browser-bridge/references/clients.md)
 - [Operations and debugging control](skills/browser-bridge/references/operations.md)
 - [Windows background window creation](skills/browser-bridge/references/windows.md)
