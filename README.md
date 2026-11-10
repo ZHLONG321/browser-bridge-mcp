@@ -61,7 +61,7 @@ console.log(inventory);
 
 Always resolve every condition supplied by the user, including browser, profile, privacy, URL, title and same-window constraints. Fuzzy descriptions require interpretation of live candidates; substring matching alone does not resolve their meaning. Ask when candidates remain ambiguous. Calls retain no current/default profile, so separate calls can target different browsers or profiles concurrently.
 
-When the user has not specified a browser, ask which browser to use. For a new operation without an existing target that determines its profile, resolve the specified browser's own startup selection; do not assume its physical profile directory is named `Default`.
+When the user has not specified a browser, discover live connections and running browsers first. Use the only available browser, or the browser uniquely identified by the user's target conditions, without asking the user to choose again. Ask only when candidates remain ambiguous. Chromium family metadata alone does not distinguish Edge from Chrome; use executable identity or the candidate page's user agent. For a new operation without an existing target that determines its profile, resolve that browser's own startup selection; do not assume its physical profile directory is named `Default`.
 
 ## Agent skill and documentation
 
