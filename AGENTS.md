@@ -2,6 +2,8 @@
 
 This repository owns the standalone browser extensions, loopback HTTP service, MCP stdio adapter, clients, Windows native guards and browser-bridge skill. Node.js and Python implement the same HTTP service protocol. The MCP adapter uses the official SDK and delegates to the Node client and existing guarded helpers; do not duplicate browser operations or change extension wire contracts in that adapter. Its entry point is `skills/browser-bridge/scripts/mcp/server.mjs`. Keep stdout reserved for MCP messages and use stderr for diagnostics. The shared HTTP service starts only through its explicit start tool and survives MCP disconnects.
 
+MCP tools use explicit resource/action names, with Chromium and Firefox prefixes for protocol-specific operations. Each fixed action has its own tool and action-specific schema; the adapter supplies the existing HTTP action internally. Keep profile/privacy/window selection explicit and preserve raw JavaScript, CDP and native API/packet capabilities. Tool names and their mapping belong in `skills/browser-bridge/references/mcp.md`; client functions and the HTTP protocol retain their existing names.
+
 The GitHub owner is `ZHLONG321`, and the repository is private. Use `git@github.com:ZHLONG321/browser-bridge-mcp.git` for its remote. Confirm the authenticated account matches the intended owner before creating repositories; a successful Git credential lookup alone does not establish the intended identity.
 
 Keep profile and privacy selection explicit on every browser call. Resolve all user-supplied target conditions against live candidates. Preserve window constraints and ask about ambiguity rather than selecting the first match. Do not introduce persistent current/default target state.

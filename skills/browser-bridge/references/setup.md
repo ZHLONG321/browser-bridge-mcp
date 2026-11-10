@@ -1,6 +1,6 @@
 # Setup and connection
 
-For MCP installation, dependencies and client registration, read [MCP installation and tools](mcp.md). MCP needs Node.js 20+/npm and exposes tools over stdio. Its explicit `bridge_start_service` tool starts or reuses the same HTTP service described below; it does not load extensions or grant browser permissions. The standard-library runtime instructions below apply to the HTTP service and standalone clients, independently of MCP dependencies.
+For MCP installation, dependencies and client registration, read [MCP installation and tools](mcp.md). MCP needs Node.js 20+/npm and exposes tools over stdio. Its explicit `bridge_service_start` tool starts or reuses the same HTTP service described below; it does not load extensions or grant browser permissions. The standard-library runtime instructions below apply to the HTTP service and standalone clients, independently of MCP dependencies.
 
 ## Runtime and server
 
@@ -22,8 +22,8 @@ The HTTP service is shared by clients and Codex sessions. Reuse a compatible run
 
 If discovery is empty or a call reports `PROFILE_NOT_CONNECTED`:
 
-1. Check `bridge_status` or the CLI `status`. If the service is unavailable, start it with `bridge_start_service` or the documented launcher, then discover again. Do not kill or replace a service already using the port.
-2. Allow automatic extension reconnection before requesting user intervention. Repeat read-only `profiles`/`discover` roughly every two seconds for up to 30 seconds; stop as soon as the required connection appears. This covers the worker's 20-second HTTP timeout, retry delay and inventory exchange. One empty response establishes only the current observation. A connected profile with no matching page is a target lookup problem, not a disconnected extension.
+1. Check `bridge_service_status` or the CLI `status`. If the service is unavailable, start it with `bridge_service_start` or the documented launcher, then discover again. Do not kill or replace a service already using the port.
+2. Allow automatic extension reconnection before requesting user intervention. Repeat read-only MCP `browser_profile_list`/`browser_connection_list` or CLI `profiles`/`discover` roughly every two seconds for up to 30 seconds; stop as soon as the required connection appears. This covers the worker's 20-second HTTP timeout, retry delay and inventory exchange. One empty response establishes only the current observation. A connected profile with no matching page is a target lookup problem, not a disconnected extension.
 3. Resolve the original browser/profile/privacy/window conditions against the fresh inventory. Re-enumerate after a disconnect; never substitute another profile. Do not replay an operation that was already dispatched or has an unknown outcome; inspect its target first.
 4. If still disconnected, inspect running browser processes and report the actual service error and available connections. Ask for the specific missing setup or permission only when needed. Reload is appropriate for a newly installed extension version or a persistent extension failure, not as the first response to an empty inventory. Debugging being off does not prevent inventory connections; an enabled preference without a debugger attachment is also separate from transport health.
 
