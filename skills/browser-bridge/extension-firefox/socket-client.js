@@ -11,6 +11,7 @@
     let running = null;
     let publishing = false;
     let publishAgain = false;
+    let completionRevision = 0;
     const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
     const notify = (state, error = "") => Promise.resolve(status(state, error)).catch(() => {});
     const send = (current, value) => {
@@ -33,8 +34,11 @@
           publishAgain = false;
           const current = connection;
           if (!current?.ready) break;
+          const revision = completionRevision;
           send(current, {type: "inventory", snapshot: await snapshot()});
-          flush(current);
+          // If a completion arrived while inventory was being read, publish
+          // again before exposing results that depend on the new resources.
+          if (completionRevision === revision) flush(current);
         } while (publishAgain);
       } catch (error) {
         // Inventory failure does not erase accepted jobs, completed results or
@@ -44,7 +48,7 @@
     }
     function receiveJob(job) {
       const existing = jobs.get(job.job_id);
-      if (existing) {flush(connection); return;}
+      if (existing) {void publish(); return;}
       const entry = {job, phase: "accepted", result: null};
       // Record acceptance synchronously, before any async native side effect.
       jobs.set(job.job_id, entry);
@@ -55,12 +59,13 @@
       progress("accepted");
       void Promise.resolve().then(() => execute(job, progress, instanceId)).then(result => {
         entry.result = result;
+        completionRevision += 1;
+        void publish();
       }, error => {
         entry.result = {job_id: job.job_id, ...(job.tab_id === undefined ? {} : {tab_id: job.tab_id}),
           status: "failed", error: String(error?.message || error), outcome_unknown: true};
-      }).finally(() => {
-        // Keep the result across socket/service restarts until the service acks.
-        send(connection, {type: "result", job, result: entry.result});
+        completionRevision += 1;
+        // Keep results across socket/service restarts until the service acks.
         void publish();
       });
     }
@@ -98,7 +103,7 @@
             if (message.type === "welcome") {
               if (message.protocol !== 2) throw new Error("Incompatible WebSocket protocol");
               clearTimeout(timer); current.ready = true; current.welcomed = true;
-              void notify("connected"); flush(current); void publish();
+              void notify("connected"); void publish();
             } else if (!current.ready) throw new Error("Handshake not completed");
             else if (message.type === "job") receiveJob(message.job);
             else if (message.type === "result_ack") {if (jobs.get(message.job_id)?.result) jobs.delete(message.job_id);}
