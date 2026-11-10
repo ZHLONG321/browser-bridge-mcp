@@ -2,6 +2,8 @@
 
 Browser Bridge provides a local stdio MCP server implemented with the official TypeScript SDK. The AI client launches it as a child process and discovers its tools. The MCP layer calls the same Node.js client and guarded Windows helpers as the CLI; extensions continue connecting to the local HTTP service.
 
+Use MCP for simple independent calls. Coordinated calls, programmatic request construction and request/result processing must use a saved script importing the [Node.js/Python clients](clients.md) directly. Do not orchestrate those workflows through MCP/CLI calls or embed JavaScript/Python in shell commands; save the script first, then invoke its file.
+
 ## Install from the repository URL
 
 When the user asks to install from this repository, install the complete `skills/browser-bridge` directory into the active agent's supported skill directory. Keep `package.json`, `package-lock.json`, `scripts`, `references` and both extensions together. Resolve the installed directory and the actual Node.js executable yourself; the user does not need to supply a skill subdirectory or command.

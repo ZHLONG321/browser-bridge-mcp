@@ -1,5 +1,16 @@
 # Code composition
 
+Coordinated calls, programmatic request construction and request/result processing must run in a saved `.mjs` or `.py` script that imports these clients directly. Do not orchestrate the workflow through MCP tools or CLI commands, including from inside a script. Save the script under the owning project's `tmp/<current session id>/`, then invoke the file. Never embed JavaScript/Python in shell commands with eval flags, here-documents/here-strings, or interpreter stdin. The examples below are script-file contents.
+
+Run a saved file using the appropriate runner:
+
+```sh
+node tmp/<session-id>/browser-task.mjs
+uv run python tmp/<session-id>/browser-task.py
+```
+
+Use the active environment's required Python runner when it differs. Resolve the installed client import path before writing the script.
+
 Import clients by their installed paths. They use standard libraries and never start the service implicitly. Each call supplies its own `profile_id` and `context: normal / private`; include `window_id` when the user specifies a window. There is no bound client or current/default profile. Calls targeting different browsers can run concurrently.
 
 Client and server runtimes are independent. Either server accepts both clients and the BAT/curl CLI; use an available runtime without installing another. On Windows, dynamic Node imports use `pathToFileURL` to turn a local path into a module URL.
