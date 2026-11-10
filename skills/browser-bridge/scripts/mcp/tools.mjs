@@ -50,6 +50,10 @@ const screenshotRect = z.strictObject({
   reference: z.enum(['page', 'viewport']).optional().describe('Coordinate origin/reference extent; defaults to page.'),
   unit: z.enum(['css_px', 'percent', 'ratio']).optional().describe('Defaults to CSS pixels. Percent uses 0..100; ratio uses 0..1 of the reference extent.'),
 });
+const recordingFields = {...selection, tab_id: tab,
+  session_id: z.string().regex(/^[A-Za-z0-9_-]+$/).describe('Current caller session ID, used for this job and its video directory.'),
+};
+const recordingJobFields = {...recordingFields, recording_id: z.string().regex(/^recording-[0-9a-f-]{36}$/)};
 
 async function probe() {
   const value = await bridge.http('/probe', {timeoutMs: 3000});
@@ -136,6 +140,23 @@ export function registerTools(server) {
   tool('browser_screenshot_rect', `Capture the supplied rectangle in the top document. Coordinates may be CSS pixels, percentages or ratios relative to the page or current viewport. ${screenshotDescription}`, {
     ...screenshotFields, rect: screenshotRect,
   }, args => bridge.screenshot({...args, scope: 'rect'}), false, true);
+
+  tool('browser_recording_start', 'Start authorized native background recording of the resolved page viewport, without focusing or scrolling. Detect support from the live target/native start result; unsupported is returned explicitly, while permission/connection failures retain their real errors. Returns a recording_id/start state immediately after native acknowledgement, without waiting for recording completion. The worker survives MCP disconnect. Optional duration_ms auto-stops; otherwise call browser_recording_stop. Saves the original native video stream without transcoding, bitrate changes or a size cap. Configure codex_notify only with the known existing Codex host and caller thread; otherwise final does not trigger an automatic chat notification.', {
+    ...recordingFields, mode: z.literal('authorized_mutation'),
+    duration_ms: integer.positive().optional().describe('Optional recording duration in milliseconds; omit for explicit stop.'),
+    audio: z.boolean().optional().describe('Include target-tab playback audio only when authorized; defaults to false.'),
+    max_width: integer.positive().optional(), max_height: integer.positive().optional(), frame_rate: integer.positive().optional(),
+    timeout_ms: integer.positive().optional(),
+    codex_notify: z.strictObject({
+      app_server_url: z.string().min(1).describe('Known existing loopback ws:// Codex App Server that owns the caller thread. Requires Node.js 22+; do not guess a port or start another server.'),
+      thread_id: z.string().min(1).describe('Caller thread on that same host; completion is delivered as tool output and may start a new turn after final.'),
+    }).optional(),
+  }, bridge.recording_start, false, true);
+  tool('browser_recording_status', 'Read one recording job, original target, saved-byte count and independent Codex notification status. Every call must repeat the profile/privacy/tab and any window constraint. Does not start, stop or replay recording.', recordingJobFields, bridge.recording_status, true);
+  tool('browser_recording_stop', 'Request that this exact background recording stop and save its original native video. Returns promptly; saving can still be in progress. Repeated stop requests do not replay native stop. Use browser_recording_result for the completed filename.', {
+    ...recordingJobFields, mode: z.literal('authorized_mutation'),
+  }, bridge.recording_stop, false, true);
+  tool('browser_recording_result', 'Return ONLY the video filename after normal recording finalization, native stream EOF, closed file and verification of a complete nonempty file with the expected byte count. Video is in %TMP%/codex-<session_id>-browser-bridge/video/. Returns explicit starting/recording/saving/unsupported/failed state until completion. Never returns Base64 or a partial filename. Does not transcode or replay native operations.', recordingJobFields, bridge.recording_result, true);
 
   tool('chromium_javascript_execute', 'Run Chromium page scripts on an exact tab, optionally in one frame. Scripts may change the page even with read_only mode; honor task authorization and never activate it without permission.', {
     ...tabFields,

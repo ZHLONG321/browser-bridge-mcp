@@ -45,5 +45,9 @@ export const debugging = fields => request('debugging', fields);
 export const userscript = fields => request('userscript', fields);
 export const webextension = fields => request('webextension', fields);
 
-// Keep the core transport dependency-free; file screenshots load on demand.
+// Keep the core transport dependency-free; file media helpers load on demand.
 export const screenshot = async fields => (await import('./screenshots.mjs')).screenshot(fields);
+export const recording_start = async fields => (await import('./recordings.mjs')).recording_start(fields);
+export const recording_status = async fields => (await import('./recordings.mjs')).recording_status(fields);
+export const recording_stop = async fields => (await import('./recordings.mjs')).recording_stop(fields);
+export const recording_result = async fields => (await import('./recordings.mjs')).recording_result(fields);

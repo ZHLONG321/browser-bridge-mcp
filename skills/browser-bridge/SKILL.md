@@ -27,6 +27,12 @@ Use the four `browser_screenshot_*` MCP tools for full-page, current-viewport, a
 
 For complete scrolling containers, **let the AI write and control the scroll/wait/capture/stitch script for the actual page**. Do not add an automatic scrolling screenshot mode or treat a fixed delay as proof of readiness. Restore original scroll positions in `finally`. Follow the [scrolling guidance](references/screenshots.md#let-the-ai-handle-complete-scrolling-containers).
 
+## Background video recording
+
+Use `browser_recording_start`, `browser_recording_status`, `browser_recording_stop` and `browser_recording_result`, or import the matching Node client functions in a saved script. Start returns a job ID after native acknowledgement; a hidden worker saves the original video stream without transcoding. Pass the caller's `session_id` and the resolved profile/privacy/window/tab on each call. Give an explicit duration or arrange an explicit stop. Check actual native support; return `unsupported` when the native recording method/codec is unavailable, preserving permission and connection errors separately. Final files go to `%TMP%/codex-<session_id>-browser-bridge/video/`; return only a verified complete nonempty file's filename. See [Recording lifecycle, original files and failures](references/recording.md).
+
+For notification after final, supply the known existing Codex App Server and caller thread through `codex_notify`. A session ID alone does not establish a reachable endpoint. Without that destination, get the result while active or when the user returns; never promise that final will be followed by an automatic notification. Notification failure retains the video. See [Codex completion delivery](references/recording.md#completion-after-codex-final).
+
 ## Select the right login session
 
 Discover browsers before asking the user to choose. Use live Bridge connections and running browser/window metadata; `browser: chromium` alone does not distinguish Edge from Chrome, so use executable identity or an eligible candidate page's user agent when necessary. Reverse lookup every supplied target condition, including URL, title, account, profile, privacy and window. If only one browser is available, or the conditions uniquely identify a browser, use it directly. Multiple profiles in the same browser do not require a browser-choice question: resolve the profile from the target conditions. Ask only when the remaining candidates are ambiguous. Do not substitute the OS default browser. When no live connection exists, inspect running/installed browsers read-only; a uniquely identified Edge can be started with the guarded helper for an authorized new-window task. Installed-browser discovery alone does not establish a logged-in profile or authorize creating a replacement for a missing existing page.
@@ -72,6 +78,7 @@ Store task-generated code, requests, logs, and exports under the owning project'
 | Install, connect, hidden server startup, private access | [Setup](references/setup.md) |
 | Free composition, client imports and examples | [Clients](references/clients.md) |
 | Screenshot areas, compression, session files and AI-controlled scrolling | [Screenshots](references/screenshots.md) |
+| Native background recording, original video files and Codex completion | [Recording](references/recording.md) |
 | Operation names, request fields, errors and deadlines | [Operations](references/operations.md) |
 | Firefox API calls, functions, events and native handles | [Firefox](references/firefox.md) |
 | Background windows, Windows Firefox foreground guard, installation paths | [Windows and window operations](references/windows.md) |

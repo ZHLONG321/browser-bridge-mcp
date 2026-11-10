@@ -52,6 +52,27 @@ const imagePath = join(screenshotDirectory(callerSessionId), filename);
 
 Resolve `resolvedTarget` and `callerSessionId` before this call; Firefox requires its live `connection_id` too. The helper verifies a complete nonempty file before returning its filename. Encoding preserves native dimensions; saved byte sizes go to stderr. See [Screenshots](screenshots.md) for full-page, viewport and element scopes, format compatibility and AI-controlled scrolling. Python retains its native CDP/WebExtension calls; this file-producing helper is a Node export.
 
+## Native video recording in Node.js
+
+The Node client exports `recording_start`, `recording_status`, `recording_stop` and `recording_result`. Compose them in a saved script when requests/results need processing. Start once with an explicit authorized target:
+
+```js
+import {recording_start, recording_status, recording_result} from '<skill>/scripts/node/client.mjs';
+
+const job = await recording_start({
+  ...resolvedTarget, session_id: callerSessionId,
+  mode: 'authorized_mutation', duration_ms: requestedDurationMs,
+});
+console.log(job); // Inspect unsupported/failed state; never assume startup succeeded.
+// On a later call, with the same resolved selection:
+const selection = {...resolvedTarget, session_id: callerSessionId, recording_id: job.recording_id};
+console.log(await recording_status(selection));
+// After completion, this returns only the verified filename:
+console.log(await recording_result(selection));
+```
+
+Resolve the target, current caller session and requested duration before this example. Without `duration_ms`, call `recording_stop({...selection, mode: 'authorized_mutation'})` explicitly. The worker saves original native MP4/WebM bytes without transcoding; result checks complete-file existence/size before exposing a filename. See [Recording](recording.md) for background lifetime, native support, recovery and optional delivery to an existing Codex App Server after final. Python can continue using native CDP calls; this background file workflow is a Node export.
+
 ## Python
 
 Add `<skill>/scripts/python` to `sys.path`, then:
