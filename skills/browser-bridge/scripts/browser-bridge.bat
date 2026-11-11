@@ -1,5 +1,6 @@
 @echo off
 setlocal DisableDelayedExpansion
+if "%~1"=="windows" goto windows
 where curl.exe >nul 2>nul
 if errorlevel 1 goto missing
 if not defined BROWSER_BRIDGE_URL set "BROWSER_BRIDGE_URL=http://127.0.0.1:30003"
@@ -13,7 +14,7 @@ if "%~1"=="rdp" goto rdp
 if "%~1"=="find" goto find
 if "%~1"=="job" goto job
 if "%~1"=="job-ack" goto job_ack
-echo Usage: %~nx0 profiles ^| discover [REQUEST.json] ^| find REQUEST.json ^| rdp REQUEST.json ^| job SELECTION.json ^| job-ack SELECTION.json ^| status ^| stop ^| tabs PROFILE normal/private ^| request PROFILE normal/private REQUEST.json
+echo Usage: %~nx0 windows OPERATION [--field VALUE] [--json REQUEST.json] ^| profiles ^| discover [REQUEST.json] ^| find REQUEST.json ^| rdp REQUEST.json ^| job SELECTION.json ^| job-ack SELECTION.json ^| status ^| stop ^| tabs PROFILE normal/private ^| request PROFILE normal/private REQUEST.json
 exit /b 2
 :job
 if "%~2"=="" exit /b 2
@@ -61,4 +62,12 @@ curl.exe --noproxy 127.0.0.1,localhost --silent --show-error --fail-with-body -H
 exit /b %ERRORLEVEL%
 :missing
 echo curl.exe is required. Install curl from https://curl.se/windows/ and add it to PATH. No download was started.
+exit /b 3
+:windows
+where node.exe >nul 2>nul
+if errorlevel 1 goto missing_node
+node.exe "%~dp0node\windows-command.mjs" %*
+exit /b %ERRORLEVEL%
+:missing_node
+echo Windows commands require Node.js 20.9+ and this skill's locked npm dependencies. No download was started.
 exit /b 3

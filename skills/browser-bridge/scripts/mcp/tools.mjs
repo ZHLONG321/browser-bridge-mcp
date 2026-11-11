@@ -1,4 +1,5 @@
 import * as z from 'zod/v4';
+import {registerWindowsTools} from './windows-tools.mjs';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {fileURLToPath} from 'node:url';
@@ -94,6 +95,7 @@ function result(value, isError = failed(value)) {
 }
 
 export function registerTools(server) {
+  registerWindowsTools(server);
   function tool(name, description, fields, handler, readOnly = false, fileOutput = false) {
     server.registerTool(name, {
       description,

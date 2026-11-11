@@ -1,11 +1,11 @@
 ---
 name: browser-bridge
-description: Operate connected Chrome, Edge and Firefox in the background through MCP tools, a Windows HTTP CLI or Node.js/Python clients. Discover profiles and tabs, use Chromium JavaScript/CDP/userscripts or Firefox WebExtension APIs and native RDP.
+description: Operate Chrome, Edge and Firefox through MCP, CLI or scripts. Discover profiles/tabs, use Chromium CDP or Firefox APIs, and use independent Node Windows commands for process/window inspection, capture and WinAPI when browser calls fail.
 ---
 
 # Browser Bridge
 
-Operate in the background. Do not activate tabs, focus or restore windows, use desktop input, or bring a page to the front without the user's explicit permission. Pass `allow_foreground: true` only for an authorized foreground operation; arbitrary JavaScript and CDP must follow the same rule.
+Background operation is the default. Apply it without repeatedly telling the user that operations are in the background. Do not activate tabs, focus or restore windows, or send desktop input without the user's explicit permission. When the task needs foreground interaction, obtain that permission if it has not already been given, then use the Windows commands to perform the authorized foreground work yourself. Pass `allow_foreground: true` where supported only with that authorization; arbitrary JavaScript, CDP and WinAPI follow the same rule.
 
 **Never ask the user to bring a browser/tab to the foreground, keep it visible, and then return to Codex to reply or confirm as a screenshot or rendering workaround.** Returning to Codex can hide the browser again, so this is not a usable handoff. Diagnose and capture in the background within the existing authorization. If that fails, report the actual failing operation and evidence, and distinguish tested alternatives from unverified possibilities; do not turn foreground switching into a prerequisite or promise that it will fix the problem. This also applies to PDF and other embedded/native viewers. See [Blank or incomplete captures](references/screenshots.md#blank-or-incomplete-captures).
 
@@ -22,6 +22,16 @@ Use MCP tools for simple independent calls, or the CLI when MCP is unavailable. 
 For installation from this repository, follow [MCP installation](references/mcp.md): install this entire skill directory and its locked Node.js dependencies, then register `scripts/mcp/server.mjs` as a stdio server in the active client. Resolve its actual absolute path and the Node executable yourself; the repository URL is enough information from the user. No MCP registry publication is required. Browser extension loading and permissions remain separate user actions.
 
 When the MCP tools are available, use them directly for simple independent calls under the rule above. `bridge_service_status` inspects the local service and `bridge_service_start` explicitly starts or reuses it; MCP startup itself opens no browser and starts no HTTP service. `browser_profile_list`, `browser_connection_list`, `browser_tab_find` and `browser_tab_list` resolve targets. Each browser action has a dedicated tool: for example, `chromium_tab_open`, `chromium_tab_navigate`, `chromium_tab_reload` and `chromium_tab_close`. The adapter supplies the HTTP action internally; do not pass `action` or `userscript_action` to MCP tools. Chromium changes requiring authorization take `mode: authorized_mutation`; selection rules match the clients below. Windows background window creation uses `edge_window_create_background` or `firefox_window_create_background`, with the existing native-helper prerequisites. See the [MCP tool list](references/mcp.md#tools) for debugging, userscript and Firefox tools. Installing MCP does not remove the CLI or change the importable clients' contracts.
+
+## Continue through Windows when browser calls fail
+
+**When the browser/extension route fails or cannot provide the required evidence, use the Windows commands to diagnose and continue the authorized task.** Inspect actual browser processes, HWNDs, titles and bounds, or capture the relevant native window to compare with a blank/incomplete browser screenshot. Do not repeatedly ask for extension reloads or stop at a browser API error when an authorized Windows route can make progress. Windows calls work without a running Bridge service or connected extension.
+
+Use the `windows_*` MCP tools, `scripts/browser-bridge.bat windows <operation> --field value`, or import `scripts/node/desktop.mjs` in a saved Node script for coordinated work. These commands implement the desktop-operator inspection/capture/WinAPI operation family directly in Node, with locked Koffi/sharp dependencies and **no Python or BO dependency**. Existing guarded Edge/Firefox creation helpers still have their separately documented Python/native prerequisites; this does not remove them. Read [Windows desktop commands](references/windows-desktop.md) for the exact operations, pixel coordinates, saved images, native API discovery and handle lifetime.
+
+**Without separate user authorization, WinAPI operations may target only browsers and programs/windows directly related to the browser task.** Discovery can identify targets; it does not authorize manipulating unrelated applications. Resolve the actual HWND/PID and its ownership first, preserve the user's profile/privacy/window constraints, and do not guess that a native HWND equals a Bridge `window_id`. Keep captures within the authorized target. Windows APIs do not bypass private-window, screen-sharing, browser permission or destructive-operation consent. Never clear browsing data through OS APIs.
+
+Preserve raw WinAPI access through `windows_search_api`, `windows_describe_api`, `windows_raw_call` and the matching command/Node exports. Consult the exact Microsoft signature, parameter names and return semantics. A valid signature and `mode` label do not grant task authorization or sandbox effects. A foreground operation needs explicit permission, then the AI can call the appropriate Windows API with `allow_foreground: true` instead of asking the user to hold the browser in front and return to Codex. Windows may refuse activation; report the actual result rather than claiming it succeeded. After a timeout or worker exit, inspect actual state before repeating a mutation; no automatic replay occurs.
 
 ## Connection and task recovery
 
@@ -84,7 +94,7 @@ scripts\browser-bridge.bat tabs <profile-id> normal
 scripts\browser-bridge.bat request <profile-id> private "<request.json>"
 ```
 
-The server launcher prefers Node.js with the prepared locked dependencies, then an offline `uv` environment with Python 3.10+ and the pinned WebSocket dependencies. It starts the server without a console window. If neither is usable, give the preparation instructions in [Setup](references/setup.md); never download a runtime automatically. The HTTP CLI uses Windows `cmd` and `curl.exe`, with no Node/Python dependency. Missing curl also stops with instructions. Default service URL: `http://127.0.0.1:30003`; override with `BROWSER_BRIDGE_URL` and the server's `--port` option.
+The server launcher prefers Node.js with the prepared locked dependencies, then an offline `uv` environment with Python 3.10+ and the pinned WebSocket dependencies. It starts the server without a console window. If neither is usable, give the preparation instructions in [Setup](references/setup.md); never download a runtime automatically. HTTP CLI commands use Windows `cmd` and `curl.exe`, with no Node/Python dependency. The separate `windows` command uses Node.js 20.9+ and locked npm dependencies, without curl, Python or the HTTP service. Missing prerequisites stop with instructions. Default service URL: `http://127.0.0.1:30003`; override with `BROWSER_BRIDGE_URL` and the server's `--port` option.
 
 Follow [Choose the call method](#choose-the-call-method) for every workflow. Write and run a needed script in one execution-tool call when no intermediate judgment is needed, using the file-editing tool to save it before invoking its runner. No fixed sequence or operation-count limit is imposed. Do not reread a saved script merely to confirm its write.
 
@@ -100,6 +110,7 @@ Store task-generated code, requests, logs, and exports under the owning project'
 | Operation names, request fields, errors and deadlines | [Operations](references/operations.md) |
 | Firefox API calls, functions, events and native handles | [Firefox](references/firefox.md) |
 | Background windows, Windows Firefox foreground guard, installation paths | [Windows and window operations](references/windows.md) |
+| Windows fallback, processes, HWNDs, native screenshots and raw WinAPI without Python | [Windows desktop commands](references/windows-desktop.md) |
 | Firefox TCP listener, native packets, bulk data and cursors | [RDP](references/rdp.md) |
 
 Choose the advertised protocol: Chromium uses `javascript`, `list_frames`, `cdp`, `tab_control`, `window_control`, `userscript`; Firefox uses `webextension` or its separate `rdp` connection. Do not substitute Chromium debugger APIs for Firefox. Opening a new RDP connection can display a native confirmation dialog: obtain permission for that interaction before `discover(rdp_port=..., allow_foreground=true)`. Keep the prompt enabled and let the user accept it. The RDP connection is not automatically associated with an extension profile or privacy context.

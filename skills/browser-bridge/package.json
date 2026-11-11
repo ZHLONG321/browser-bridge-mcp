@@ -1,14 +1,17 @@
 {
   "name": "browser-bridge-mcp",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "private": true,
   "type": "module",
   "description": "Local MCP tools for Browser Bridge extensions and background browser control",
   "engines": {
-    "node": ">=20"
+    "node": ">=20.9.0"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.4.0",
+    "koffi": "3.3.7",
+    "sharp": "0.35.5",
+    "undici": "6.29.1",
     "ws": "8.22.2",
     "zod": "4.6.7"
   }

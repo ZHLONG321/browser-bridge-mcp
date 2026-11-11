@@ -73,6 +73,10 @@ console.log(await recording_result(selection));
 
 Resolve the target, current caller session and requested duration before this example. Without `duration_ms`, call `recording_stop({...selection, mode: 'authorized_mutation'})` explicitly. The worker saves original native MP4/WebM bytes without transcoding; result checks complete-file existence/size before exposing a filename. See [Recording](recording.md) for background lifetime, native support, recovery and optional delivery to an existing Codex App Server after final. Python can continue using native CDP calls; this background file workflow is a Node export.
 
+## Windows desktop in Node.js
+
+Independent Windows desktop operations are Node exports from `scripts/node/desktop.mjs`, including `list_windows`, `find_windows`, `get_window_process`, `capture_window` and `raw_call`. They use neither Python/BO nor the Bridge service. For coordinated native work, import them in a saved `.mjs` file; see [Windows desktop commands](windows-desktop.md) for all 15 operations, authorization and process-local handle lifetime. `scripts/node/windows-runner.mjs` exports `windows_call(operation, options)` for isolated single calls. The existing `scripts/node/windows.mjs` remains the guarded browser-creation/profile helper and keeps its separately documented prerequisites.
+
 ## Python
 
 Add `<skill>/scripts/python` to `sys.path`, then:

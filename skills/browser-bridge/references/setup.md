@@ -1,6 +1,6 @@
 # Setup and connection
 
-For MCP installation, dependencies and client registration, read [MCP installation and tools](mcp.md). MCP needs Node.js 20+/npm and exposes tools over stdio. Its explicit `bridge_service_start` tool starts or reuses the shared service described below; it does not load extensions or grant browser permissions. The service accepts HTTP client requests and authenticated extension WebSockets on the same loopback port.
+For MCP installation, dependencies and client registration, read [MCP installation and tools](mcp.md). MCP needs Node.js 20.9+/npm and exposes tools over stdio. Its explicit `bridge_service_start` tool starts or reuses the shared service described below; it does not load extensions or grant browser permissions. The service accepts HTTP client requests and authenticated extension WebSockets on the same loopback port. Independent [Windows desktop commands](windows-desktop.md) run in Node without Python, curl, the service or an extension; keep their prebuilt optional npm dependencies installed. The older guarded browser-creation helpers retain their own Python/native prerequisites.
 
 ## Runtime and server
 
@@ -22,7 +22,7 @@ scripts\browser-bridge.bat stop
 
 `--session` is required. Logs go to `%TMP%/<session-id>/browser bridge/server.log`; the launcher reports its path and whether the service started. A server already occupying the requested port is reported, never killed or silently replaced. `stop` requests shutdown of the Bridge at the configured URL; use only for the service you intend to stop. There is no cwd initialization.
 
-The client BAT requires curl with `--fail-with-body` support (7.76+). Windows 10/11 generally supplies curl. If unavailable, tell the user to install/update it from [curl for Windows](https://curl.se/windows/) and expose `curl.exe` on PATH. Do not bundle executables or download them automatically.
+The HTTP commands in the client BAT require curl with `--fail-with-body` support (7.76+); the separate `windows` command does not. Windows 10/11 generally supplies curl. If unavailable, tell the user to install/update it from [curl for Windows](https://curl.se/windows/) and expose `curl.exe` on PATH. Do not bundle executables or download them automatically.
 
 ## Connection recovery
 
@@ -105,7 +105,7 @@ Give one concrete instruction naming the browser, physical profile when known, B
 | Website camera/microphone/location permission denied | For the task's site, use the browser's address-bar **Site information/Permissions** control and permit only the required device/capability, then let the user accept any actual browser/OS prompt. Extension permissions alone do not establish a website's grants. |
 | Native messaging host missing | Report the named host and missing installation/registration prerequisite. `nativeMessaging` permission does not install a host; there is no extension-details toggle that repairs it. Obtain authorization before installing or registering software. |
 
-Manual consent is a settings/picker interaction, not a screenshot workaround: never ask the user to keep a task page/browser in front while returning to Codex. `<all_urls>` does not unlock every internal/protected page, make inactive-tab `captureVisibleTab` possible or prove that a PDF has rendered. Preserve the background-only rule after consent.
+Manual consent is a settings/picker interaction, not a screenshot workaround: never ask the user to keep a task page/browser in front while returning to Codex. `<all_urls>` does not unlock every internal/protected page, make inactive-tab `captureVisibleTab` possible or prove that a PDF has rendered. Background operation remains the default after consent; a separately authorized foreground task can use the Windows commands.
 
 Sources: [Chrome permission declarations and optional-permission constraints](https://developer.chrome.com/docs/extensions/reference/api/permissions), [Chrome/Edge desktop API differences](https://learn.microsoft.com/en-us/microsoft-edge/extensions/developer-guide/api-support), [Firefox permissions and browser compatibility](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/manifest.json/permissions), [Chrome extension access controls](https://support.google.com/chrome/answer/2664769), [Firefox private-window access](https://support.mozilla.org/en-US/kb/extensions-private-browsing), [Native user-script controls](https://developer.chrome.com/docs/extensions/reference/api/userScripts), [Tab capture invocation](https://developer.chrome.com/docs/extensions/reference/api/tabCapture), [Desktop capture picker](https://developer.chrome.com/docs/extensions/reference/api/desktopCapture), [Native messaging host registration](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging).
 
