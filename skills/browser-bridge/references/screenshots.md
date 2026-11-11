@@ -6,6 +6,14 @@ Use screenshots proactively for questions about rendered appearance and during a
 
 Start with the scope that explains the issue: a viewport for context, an element/rectangle with padding for a local defect, or the full document for overall layout. Combine the visual evidence with DOM/computed styles, console errors and relevant network observations under [DevTools guidance](operations.md#devtools-and-network-observation). Resolve targets through discovery and DOM inspection first; screenshot capture itself performs no search. Screenshots and diagnostics remain within the task's existing inspection, mutation and testing authorization.
 
+## Blank or incomplete captures
+
+Distinguish an unreadable/empty image file, a blank region in a valid screenshot, and content that has not rendered in the browser. A successful request, document/iframe load event, elapsed delay or emulated focus is not proof that an embedded/native viewer has produced its content. Inspect the saved pixels and relevant DOM, request and browser errors before assigning a cause.
+
+When an authorized native window capture is available, compare it with the browser capture on the same resolved target and relevant state; note whether the tab is selected, hidden or already displayed. A window capture of another selected tab does not establish what an inactive tab contains. Do not infer general background support or failure from a viewer that has already displayed successfully.
+
+Keep recovery in the background. Do not ask the user to foreground the browser, leave it visible, and return to Codex to confirm. Separate unsupported native commands, request timeouts and missing rendered content. Diagnose alternative parameters/commands through their actual native responses under the task's testing authorization; do not present a different encoding, longer delay or reload as a proven fix. Reading or rendering the underlying document separately can inspect its content, but does not verify the original page's embedded preview. Temporary diagnostic pages must be closed when finished.
+
 ## Capture an already-resolved target
 
 Resolve browser, profile, privacy context, window, tab, elements and frames before taking a screenshot. Screenshot tools do not search for targets, accept vague descriptions, scroll elements into view, expand hidden overflow, or decide whether application content is ready. Keep selection explicit on every call.

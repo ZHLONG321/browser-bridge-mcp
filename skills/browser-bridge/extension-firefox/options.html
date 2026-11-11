@@ -7,7 +7,6 @@
   label { display: block; margin: 1rem 0; }
   input[type=url] { width: 100%; box-sizing: border-box; padding: .5rem; }
   button { padding: .5rem 1rem; }
-  fieldset label { display: inline-block; min-width: 14rem; margin: .3rem; }
   pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 </style>
 <h1>Firefox Browser Bridge</h1>
@@ -18,10 +17,8 @@
   <p>Enabled control permits privileged browser API calls and function arguments from the local service. Turning it off stops new calls and removes bridge event subscriptions; previous browser changes remain.</p>
   <button type="submit">Save</button>
 </form>
-<h2>Optional browser permissions</h2>
-<p>All permissions are selected by default. Enabling native control and clicking Save requests the selected permissions, including access to all websites. Confirm Firefox's permission prompt to finish enabling control.</p>
-<fieldset id="permissions"><legend>Select permissions</legend></fieldset>
-<button id="grant" type="button">Grant selected permissions</button>
+<h2>Browser permissions</h2>
+<p>This version declares broad desktop browser permissions, including access to all websites. Firefox grants them through its installation or update approval. Clearing browsing data is excluded. Actual grants and private-window access appear below; private browsing still requires Allow in the add-on's details.</p>
 <h2>Connection</h2>
 <pre id="status" aria-live="polite"></pre>
 <p>To include private windows, allow this extension in private browsing in Firefox's add-on details. Normal and private tabs remain separately identified.</p>
