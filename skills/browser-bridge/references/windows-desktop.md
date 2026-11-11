@@ -1,5 +1,7 @@
 # Windows desktop commands
 
+On non-Windows systems, all 15 operations (including documentation search/description) immediately report `WINDOWS_UNAVAILABLE` with `details.platform`; they do not start a worker, load Win32 libraries, create screenshot files or make documentation requests. MCP returns an error result, CLI prints the structured error and exits nonzero, and direct Node calls throw an error with the same code/details. Guarded Windows browser helpers use the same platform error. This does not disable the other browser tools.
+
 Use these commands when browser calls fail or Windows evidence is needed to continue the authorized browser task. They run directly in Node.js on Windows and require neither Python/BO nor a live Bridge service/extension. Install the locked dependencies as described in [MCP installation](mcp.md); Node.js 20.9+ is required. Koffi and sharp use platform-specific prebuilt optional npm packages. Do not omit optional dependencies. Supported prebuilt combinations follow [Koffi](https://koffi.dev/) and [sharp](https://sharp.pixelplumbing.com/install/); do not silently install a compiler or Python on a machine lacking a matching binary.
 
 This command family is separate from the older guarded browser-creation helpers in [Windows operations](windows.md), which still require their Python/native prerequisites. Native desktop commands do not establish a logged-in profile or bypass browser access controls.

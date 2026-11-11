@@ -53,6 +53,8 @@ By default both layers use `http://127.0.0.1:30003`. For a different existing Br
 
 MCP tool API 2.4 exposes 62 tools named by resource and action, including 15 independent `windows_*` commands. Reconnect the MCP client after updating the installed skill to discover the tool list. Service and extension prerequisites are maintained in [Setup](setup.md#connection-recovery). Existing CLI commands, importable client functions and HTTP actions keep their names.
 
+On non-Windows systems, Windows tools and guarded Windows helpers return `WINDOWS_UNAVAILABLE` with the actual platform. They do not start native workers or suggest extension reloads; ordinary browser tools are unaffected. MCP implementation version 2.4.1 includes this platform handling.
+
 Each fixed action has its own input schema. Do not send `action` or `userscript_action`: the adapter supplies the fixed HTTP action. Only action-relevant fields are accepted. Chromium tab/window changes, debugging enable and userscript changes require `mode: authorized_mutation`; foreground tab activation also requires `allow_foreground: true`. Arbitrary JavaScript, CDP and Firefox APIs/packets remain native capabilities whose effects must respect task authorization.
 
 | Tools | Purpose |

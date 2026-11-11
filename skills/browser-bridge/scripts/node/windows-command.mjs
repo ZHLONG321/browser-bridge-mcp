@@ -1,5 +1,6 @@
 import {readFile} from 'node:fs/promises';
 import {operations, windows_call} from './windows-runner.mjs';
+import {requireWindows} from './windows-platform.mjs';
 
 async function main() {
   const argv = process.argv.slice(2);
@@ -10,6 +11,7 @@ async function main() {
     return;
   }
   if (!operations.includes(operation)) throw new TypeError('Unknown Windows operation. Use windows help.');
+  requireWindows();
   let args = {};
   const seen = new Set();
   for (let i = 0; i < argv.length; i += 2) {

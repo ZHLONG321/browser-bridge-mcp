@@ -1,6 +1,6 @@
 {
   "name": "browser-bridge-mcp",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "private": true,
   "type": "module",
   "description": "Local MCP tools for Browser Bridge extensions and background browser control",

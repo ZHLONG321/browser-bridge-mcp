@@ -3,11 +3,12 @@ import {fileURLToPath} from 'node:url';
 import {stat, readFile} from 'node:fs/promises';
 import {resolve, join, basename} from 'node:path';
 import {profiles, webextension, find_tabs, window_control, defaultUrl} from './client.mjs';
+import {requireWindows} from './windows-platform.mjs';
 
 // This call owns one native guard lease, never a current/default browser selection.
 export async function create_firefox_window({profile_id, context, connection_id,
-  native_window_handle, anchor_window_id, url = 'about:blank', service_url}) {
-  if (process.platform !== 'win32') throw new Error('The Firefox foreground guard requires Windows.');
+  native_window_handle, anchor_window_id, url = 'about:blank', service_url} = {}) {
+  requireWindows();
   if (!profile_id || !connection_id || !['normal', 'private'].includes(context)) throw new Error('Explicit profile_id, connection_id and normal/private context are required.');
   if (!Number.isSafeInteger(native_window_handle) || native_window_handle <= 0 || !Number.isSafeInteger(anchor_window_id)) throw new Error('Supply a live native_window_handle and its bridge anchor_window_id.');
   const selected = (await profiles({service_url})).profiles.find(item => item.profile_id === profile_id && item.connection_id === connection_id && item.browser === 'firefox');
@@ -95,13 +96,13 @@ async function pythonJson(script, args = [], leveldb = false) {
 }
 
 export async function edge_defaults() {
-  if (process.platform !== 'win32') throw new Error('Edge installation discovery requires Windows.');
+  requireWindows();
   return pythonJson('edge_info.py');
 }
 
 // Inspect only a task-resolved physical profile; disconnected profiles are not installation requests.
-export async function edge_profile_extension_status({user_data_dir, profile_directory, context}) {
-  if (process.platform !== 'win32') throw new Error('Edge profile inspection requires Windows.');
+export async function edge_profile_extension_status({user_data_dir, profile_directory, context} = {}) {
+  requireWindows();
   if (!['normal', 'private'].includes(context)) throw new Error('Explicit normal/private context is required.');
   if (typeof user_data_dir !== 'string' || !user_data_dir) throw new Error('Resolve the Edge user-data directory first.');
   if (typeof profile_directory !== 'string' || !profile_directory || profile_directory === '.' || profile_directory === '..' || /[\\/]/.test(profile_directory)) throw new Error('Supply one existing physical profile directory name.');
@@ -148,8 +149,8 @@ export async function edge_profile_extension_status({user_data_dir, profile_dire
 
 // Physical profile selection is explicit here; no default/current target is saved.
 export async function create_edge_window({executable, user_data_dir, profile_directory,
-  context, url, service_url = defaultUrl()}) {
-  if (process.platform !== 'win32') throw new Error('Edge background startup requires Windows.');
+  context, url, service_url = defaultUrl()} = {}) {
+  requireWindows();
   if (!['normal', 'private'].includes(context)) throw new Error('Explicit normal/private context is required.');
   if (typeof profile_directory !== 'string' || !profile_directory || profile_directory === '.' || profile_directory === '..' || /[\\/]/.test(profile_directory)) throw new Error('Supply one existing physical profile directory name.');
   if (typeof executable !== 'string' || basename(executable).toLowerCase() !== 'msedge.exe' || !user_data_dir) throw new Error('Resolve the installed Edge executable and user-data directory first.');

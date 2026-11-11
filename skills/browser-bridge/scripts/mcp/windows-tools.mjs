@@ -23,7 +23,7 @@ export function registerWindowsTools(server) {
   for (const [operation, description] of Object.entries(descriptions)) {
     const fileOutput = operation.startsWith('capture_');
     const readOnly = operation !== 'raw_call' && !fileOutput;
-    server.registerTool(`windows_${operation}`, {description, inputSchema: windowsSchemas[operation],
+    server.registerTool(`windows_${operation}`, {description: `${description} Unavailable on non-Windows platforms (WINDOWS_UNAVAILABLE).`, inputSchema: windowsSchemas[operation],
       annotations: {readOnlyHint: readOnly, destructiveHint: operation === 'raw_call', idempotentHint: readOnly, openWorldHint: true},
     }, async args => {
       try {
@@ -34,7 +34,9 @@ export function registerWindowsTools(server) {
       } catch (error) {
         const structuredContent = {error: {code: error.code || 'WINDOWS_OPERATION_FAILED', message: error.message,
           ...(error.details ? {details: error.details} : {})},
-          recovery: 'Inspect the actual HWND/PID, authorization and native error. Do not replay uncertain mutations. Windows commands do not require restarting Bridge or reloading an extension.'};
+          recovery: error.code === 'WINDOWS_UNAVAILABLE'
+            ? 'Windows commands are unavailable on this OS. Do not retry them, install Windows dependencies or reload the browser extension to resolve this platform limitation.'
+            : 'Inspect the actual HWND/PID, authorization and native error. Do not replay uncertain mutations. Windows commands do not require restarting Bridge or reloading an extension.'};
         return {content: [{type: 'text', text: JSON.stringify(structuredContent)}], structuredContent, isError: true};
       }
     });

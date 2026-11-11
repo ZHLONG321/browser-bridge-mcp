@@ -116,7 +116,9 @@ export function registerTools(server) {
             ...(error.stdout === undefined ? {} : {launcher_output: error.stdout}),
             ...(error.stderr === undefined ? {} : {launcher_error: error.stderr}),
           },
-          recovery: 'Use browser_job_status with the returned job_id and exact original selection after an uncertain call. Inspect its result and the resolved target before repeating a mutation. A service connection refusal can be handled with bridge_service_start.',
+          recovery: error.code === 'WINDOWS_UNAVAILABLE'
+            ? 'This Windows helper is unavailable on this OS. Do not retry it or reload the browser extension to resolve this platform limitation.'
+            : 'Use browser_job_status with the returned job_id and exact original selection after an uncertain call. Inspect its result and the resolved target before repeating a mutation. A service connection refusal can be handled with bridge_service_start.',
         }, true);
       }
     });

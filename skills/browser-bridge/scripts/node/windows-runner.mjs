@@ -1,6 +1,7 @@
 import {fork} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {windowsSchemas} from './windows-schema.mjs';
+import {requireWindows} from './windows-platform.mjs';
 
 export const operations = Object.freeze([
   'list_windows', 'find_windows', 'get_foreground_window', 'get_window', 'get_window_rect', 'get_client_rect',
@@ -10,6 +11,7 @@ export const operations = Object.freeze([
 
 // Isolate potentially blocking PrintWindow and native calls from the MCP event loop.
 export function windows_call(operation, options = {}) {
+  requireWindows();
   if (!operations.includes(operation)) throw new TypeError('Unknown Windows operation.');
   const {timeout_ms = 30000, ...args} = windowsSchemas[operation].parse(options);
   if (!Number.isSafeInteger(timeout_ms) || timeout_ms <= 0 || timeout_ms > 2147483647) throw new TypeError('timeout_ms must be a positive 32-bit timer duration.');

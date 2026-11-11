@@ -1,6 +1,7 @@
 // Microsoft Learn is the signature source; unsupported pointers/structures are rejected.
 import {join} from 'node:path';
 import {fetch, ProxyAgent} from 'undici';
+import {requireWindows} from './windows-platform.mjs';
 
 const handles = new Set(['HANDLE', 'HWND', 'HDC', 'HGDIOBJ', 'HBITMAP', 'HMODULE', 'HINSTANCE', 'HICON', 'HCURSOR', 'HMENU', 'HMONITOR', 'HKL', 'HHOOK', 'HRGN', 'HBRUSH', 'HFONT', 'HPALETTE', 'HGLOBAL', 'HLOCAL', 'HKEY']);
 const types = {
@@ -41,6 +42,7 @@ async function download(url, proxy_url, json = false) {
 }
 
 export async function search_api({query, max_results = 10, proxy_url} = {}) {
+  requireWindows();
   if (typeof query !== 'string' || !query.trim()) throw new TypeError('query must be nonempty.');
   if (!Number.isSafeInteger(max_results) || max_results < 1) throw new TypeError('max_results must be a positive integer.');
   const url = new URL('https://learn.microsoft.com/api/search');
@@ -83,6 +85,7 @@ function parse(api, syntax) {
 }
 
 export async function describe_api({api, proxy_url} = {}) {
+  requireWindows();
   if (typeof api !== 'string' || !/^[A-Za-z_]\w*$/.test(api)) throw new TypeError('api must be an exact Win32 export name.');
   const candidates = await search_api({query: api, max_results: 30, proxy_url});
   const exact = candidates.find(item => item.api === api);
@@ -129,7 +132,7 @@ function valueFor(k, type, value, name) {
 }
 
 export async function raw_call({api, arguments: args = {}, proxy_url, mode, allow_foreground = false} = {}) {
-  if (process.platform !== 'win32') throw new Error('WinAPI calls require Windows.');
+  requireWindows();
   if (!['read_only', 'authorized_mutation'].includes(mode)) throw new TypeError('raw_call requires mode: read_only or authorized_mutation. This records caller intent; it is not a sandbox.');
   if (!args || typeof args !== 'object' || Array.isArray(args)) throw new TypeError('arguments must be an object keyed by documented parameter names.');
   const description = await describe_api({api, proxy_url});

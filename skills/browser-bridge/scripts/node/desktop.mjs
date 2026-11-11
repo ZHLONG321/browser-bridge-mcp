@@ -3,11 +3,12 @@ import {join} from 'node:path';
 import {mkdir, open, stat} from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
 import {screenshotDirectory} from './screenshots.mjs';
+import {requireWindows} from './windows-platform.mjs';
 export {search_api, describe_api, raw_call} from './windows-api.mjs';
 
 let nativePromise;
 async function native() {
-  if (process.platform !== 'win32') throw new Error('Windows desktop commands require Windows.');
+  requireWindows();
   return nativePromise ??= import('koffi').then(({default: k}) => {
     const system32 = join(process.env.SystemRoot || 'C:/Windows', 'System32');
     const u = k.load(join(system32, 'user32.dll'));
@@ -133,6 +134,7 @@ function matcher(title, match) {
 }
 
 async function enumerateWindows({include_invisible = false, limit, title, match = 'contains'}) {
+  requireWindows();
   integer(limit, 'limit', 1, Number.MAX_SAFE_INTEGER);
   if (typeof include_invisible !== 'boolean') throw new TypeError('include_invisible must be boolean.');
   const matches = title === undefined ? () => true : matcher(title, match);
@@ -159,6 +161,7 @@ async function enumerateWindows({include_invisible = false, limit, title, match 
 
 export function list_windows({include_invisible = false, limit = 500} = {}) { return enumerateWindows({include_invisible, limit}); }
 export function find_windows({title, match = 'contains', include_invisible = false, limit = 100} = {}) {
+  requireWindows();
   matcher(title, match);
   return enumerateWindows({title, match, include_invisible, limit});
 }
@@ -207,8 +210,12 @@ async function processes(limit, requestedPid) {
     return result;
   } finally { n.CloseHandle(snapshot); }
 }
-export function list_processes({limit = 5000} = {}) { return processes(integer(limit, 'limit', 1, Number.MAX_SAFE_INTEGER)); }
+export function list_processes({limit = 5000} = {}) {
+  requireWindows();
+  return processes(integer(limit, 'limit', 1, Number.MAX_SAFE_INTEGER));
+}
 export async function get_process({process_id} = {}) {
+  requireWindows();
   integer(process_id, 'process_id', 0, 0xffffffff);
   const found = await processes(1, process_id);
   if (!found.length) throw new Error('The requested process no longer exists. Discover it again.');
@@ -261,6 +268,7 @@ function bitmap(n, {hwnd, x, y, width, height}) {
 }
 
 async function capture({session_id, format = 'webp', quality = format === 'jpeg' ? 90 : 100, ...area}) {
+  requireWindows();
   const directory = screenshotDirectory(session_id);
   if (!['webp', 'jpeg'].includes(format)) throw new TypeError('format must be webp or jpeg.');
   integer(quality, 'quality', 1, 100);
@@ -281,6 +289,7 @@ async function capture({session_id, format = 'webp', quality = format === 'jpeg'
 }
 
 export async function capture_window({hwnd, title, title_match = 'exact', ...options} = {}) {
+  requireWindows();
   if ((hwnd === undefined) === (title === undefined)) throw new TypeError('Supply exactly one of hwnd or title.');
   if (title !== undefined) {
     const found = await find_windows({title, match: title_match});

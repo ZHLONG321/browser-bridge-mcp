@@ -25,6 +25,8 @@ When the MCP tools are available, use them directly for simple independent calls
 
 ## Continue through Windows when browser calls fail
 
+Windows commands and guarded Windows browser helpers are available only on Windows. On other operating systems they immediately report `WINDOWS_UNAVAILABLE`, with the actual platform, before starting a native worker, loading Win32 libraries, reading Windows paths or searching WinAPI documentation. Treat this as unavailable; do not retry or ask for extension reloads or Windows dependency installation. Other browser tools retain their own platform support.
+
 **When the browser/extension route fails or cannot provide the required evidence, use the Windows commands to diagnose and continue the authorized task.** Inspect actual browser processes, HWNDs, titles and bounds, or capture the relevant native window to compare with a blank/incomplete browser screenshot. Do not repeatedly ask for extension reloads or stop at a browser API error when an authorized Windows route can make progress. Windows calls work without a running Bridge service or connected extension.
 
 Use the `windows_*` MCP tools, `scripts/browser-bridge.bat windows <operation> --field value`, or import `scripts/node/desktop.mjs` in a saved Node script for coordinated work. These commands implement the desktop-operator inspection/capture/WinAPI operation family directly in Node, with locked Koffi/sharp dependencies and **no Python or BO dependency**. Existing guarded Edge/Firefox creation helpers still have their separately documented Python/native prerequisites; this does not remove them. Read [Windows desktop commands](references/windows-desktop.md) for the exact operations, pixel coordinates, saved images, native API discovery and handle lifetime.
