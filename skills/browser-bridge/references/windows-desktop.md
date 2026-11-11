@@ -1,8 +1,21 @@
 # Windows desktop commands
 
-On non-Windows systems, all 15 operations (including documentation search/description) immediately report `WINDOWS_UNAVAILABLE` with `details.platform`; they do not start a worker, load Win32 libraries, create screenshot files or make documentation requests. MCP returns an error result, CLI prints the structured error and exits nonzero, and direct Node calls throw an error with the same code/details. Guarded Windows browser helpers use the same platform error. This does not disable the other browser tools.
+On non-Windows systems, both implementations immediately report `WINDOWS_UNAVAILABLE` with `details.platform` for all 15 operations, including documentation search/description. They do not start a worker, load Win32 libraries, create screenshot files or make documentation requests. MCP returns an error result, CLI prints the structured error and exits nonzero, and direct Node/Python functions raise an error with the same code/details. Guarded Windows browser helpers use the same platform error. This does not disable the other browser tools.
 
-Use these commands when browser calls fail or Windows evidence is needed to continue the authorized browser task. They run directly in Node.js on Windows and require neither Python/BO nor a live Bridge service/extension. Install the locked dependencies as described in [MCP installation](mcp.md); Node.js 20.9+ is required. Koffi and sharp use platform-specific prebuilt optional npm packages. Do not omit optional dependencies. Supported prebuilt combinations follow [Koffi](https://koffi.dev/) and [sharp](https://sharp.pixelplumbing.com/install/); do not silently install a compiler or Python on a machine lacking a matching binary.
+Use these commands when browser calls fail or Windows evidence is needed to continue the authorized browser task. The skill ships two independent implementations of the same 15 operations. Neither invokes the other or needs BO, another skill, the Bridge service or an extension. MCP uses Node; choose either implementation for CLI or saved scripts according to the prepared runtime. Do not switch implementations to replay a mutation with an unknown outcome.
+
+| Implementation | Requirements | CLI | Saved-script import |
+| --- | --- | --- | --- |
+| Node | Node.js 20.9+, locked Koffi/sharp npm dependencies | `scripts/browser-bridge.bat windows <operation>` | `scripts/node/desktop.mjs` |
+| Python | uv, Python 3.12+, pinned `scripts/python/windows-requirements.txt` | `scripts/browser-bridge.bat windows-python <operation>` | `browser_bridge_windows` from `scripts/python` |
+
+Prepare Node as described in [MCP installation](mcp.md). Koffi and sharp use platform-specific prebuilt optional npm packages; do not omit optional dependencies. Supported binary combinations follow [Koffi](https://koffi.dev/) and [sharp](https://sharp.pixelplumbing.com/install/). Python uses stdlib ctypes for Win32, Pillow for encoding, and httpx/Pydantic for the documentation catalog. Prepare it explicitly from the skill directory:
+
+```sh
+uv run --no-project --python ">=3.12" --with-requirements scripts/python/windows-requirements.txt python --version
+```
+
+The Python BAT uses `--offline` and never downloads dependencies or a runtime while operating a browser. If the selected implementation is missing prerequisites, stop with preparation instructions; do not silently install compilers or switch runtimes after dispatching a mutation. [Pillow's Windows installation documentation](https://pillow.readthedocs.io/en/stable/installation/basic-installation.html) describes supported wheels.
 
 This command family is separate from the older guarded browser-creation helpers in [Windows operations](windows.md), which still require their Python/native prerequisites. Native desktop commands do not establish a logged-in profile or bypass browser access controls.
 
@@ -23,6 +36,8 @@ scripts\browser-bridge.bat windows get-window-process --hwnd <resolved-hwnd>
 scripts\browser-bridge.bat windows capture-window --hwnd <resolved-hwnd> --session-id <caller-session-id>
 scripts\browser-bridge.bat windows describe-api --api SetForegroundWindow --proxy-url <proxy-url>
 scripts\browser-bridge.bat windows raw-call --json "<saved-request.json>"
+scripts\browser-bridge.bat windows-python list-windows
+scripts\browser-bridge.bat windows-python capture-window --hwnd <resolved-hwnd> --session-id <caller-session-id>
 ```
 
 Hyphens/underscores in operation/flag names are equivalent. Each flag requires a value; values parse as JSON when possible, otherwise as plain strings. `--json` loads an options object from a file; duplicate/unknown fields fail. Nested `arguments` belongs in that file rather than shell-embedded code. A successful capture prints only its filename; other commands print JSON. Errors print JSON to stderr with a nonzero exit code. The equivalent direct Node command is `node scripts/node/windows-command.mjs <operation> ...`.
@@ -40,9 +55,25 @@ console.log(await desktop.get_window_process({hwnd: target.hwnd}));
 
 Resolve the import to the actual installed path. Each direct function takes an options object and returns its value, with no `.run()` or saved current target. Browser functions remain in `client.mjs`; guarded browser creation remains in `windows.mjs`. The independent Windows functions are in `desktop.mjs`.
 
-MCP/CLI calls use a dedicated Node child process per operation, with no console window, and `timeout_ms` defaulting to 30000. This keeps synchronous native calls such as PrintWindow from blocking the MCP event loop. A timeout terminates only that worker; a raw call may already have changed state, so inspect before replaying it. A timed-out capture may leave a partial file and never returns its filename. Direct `desktop.mjs` functions execute in the caller process and can block on native calls. To isolate a single operation from a script, import `windows_call(operation, options)` from `scripts/node/windows-runner.mjs`.
+For Python, save a `.py` file, resolve the installed skill path, and add its `scripts/python` directory to `sys.path` before importing. For example, with `skill_root` already resolved:
 
-HWNDs/PIDs can identify targets across calls. Handles returned by OpenProcess, GDI allocations and similar APIs are **local to their owning process**. They cannot be passed from one MCP/CLI worker to another. Compose such operations in one saved Node script importing `desktop.mjs`, and release acquired handles/resources in `finally`. Do not return a process-local handle from an isolated worker expecting it to remain usable.
+```python
+import sys
+
+sys.path.insert(0, str(skill_root / "scripts" / "python"))
+import browser_bridge_windows as desktop
+
+candidates = desktop.find_windows("Edge", match="contains")
+if len(candidates) != 1:
+    raise ValueError("Resolve the target HWND from the task conditions before acting.")
+print(desktop.get_window_process(candidates[0]["hwnd"]))
+```
+
+Run the saved file through `uv run --offline --no-project --python ">=3.12" --with-requirements <installed-skill>/scripts/python/windows-requirements.txt python -B <script.py>`. Python exposes the operation names in the table below as synchronous functions: target/query arguments may be positional, other fields are keyword arguments. `desktop.call("get_window", hwnd=resolved_hwnd)` provides named dispatch without keeping a current target. The direct Python CLI is `uv run --offline --no-project --python ">=3.12" --with-requirements scripts/python/windows-requirements.txt python -B scripts/python/browser_bridge_windows_cli.py <operation> ...`.
+
+Node MCP/CLI and Python CLI calls use a dedicated child process in their own runtime per operation, with no console window, and `timeout_ms` defaulting to 30000. This keeps synchronous native calls such as PrintWindow from blocking the MCP event loop. A timeout terminates only that worker; a raw call may already have changed state, so inspect before replaying it. A timed-out capture may leave a partial file and never returns its filename. Direct Node/Python functions execute in the caller process and can block on native calls. To isolate a single Node operation from a script, import `windows_call(operation, options)` from `scripts/node/windows-runner.mjs`.
+
+HWNDs/PIDs can identify targets across calls. Handles returned by OpenProcess, GDI allocations and similar APIs are **local to their owning process**. They cannot be passed from one MCP/CLI worker to another, or between the Python and Node processes. Compose such operations in one saved script importing `desktop.mjs` or `browser_bridge_windows`, and release acquired handles/resources in `finally`. Do not return a process-local handle from an isolated worker expecting it to remain usable.
 
 ## Operations
 
@@ -66,7 +97,7 @@ Every MCP/CLI operation accepts optional `timeout_ms`; it belongs to the worker 
 | `describe_api` | Required exact `api`, optional `proxy_url`; exact C signature, DLL, types, documentation URL and raw-call support/reason |
 | `raw_call` | Required exact `api`, `arguments` object keyed by documented names, `mode`; optional `proxy_url`, `allow_foreground=false`; native value and signature/source |
 
-MCP list results use `{items: [...]}`; no-foreground uses `{window: null}`. Direct Node/CLI functions return arrays/null directly. Executable paths that cannot be read remain `path: null` with `path_error`; access denial does not mean the process is absent. No command silently launches/stops a process as inspection or repairs a browser by clearing data.
+MCP list results use `{items: [...]}`; no-foreground uses `{window: null}`. Direct Node/CLI functions return arrays/null directly; Python returns lists/None. Both implementations use the same fields, physical-pixel coordinates, capture policy and supported raw-signature subset; image encoder output bytes need not be identical. Executable paths that cannot be read remain `path: null` with `path_error`; access denial does not mean the process is absent. No command silently launches/stops a process as inspection or repairs a browser by clearing data.
 
 ## Captures and coordinates
 
@@ -78,7 +109,7 @@ Coordinates are physical pixels with per-monitor DPI awareness, not CSS pixels o
 
 ## Raw WinAPI
 
-Search or inspect unfamiliar functions before calling them. The catalog searches Microsoft Learn, requires an exact function name/signature and identifies its Windows system DLL; raw calls do not guess types or load arbitrary DLL paths. Each supplied `arguments` key must match a documented parameter, including explicit null values for optional parameters. Supported types are fixed-width Win32 scalars, pointer-sized integers/handles and input strings. Use decimal/hex strings for integers beyond JavaScript's safe integer range. Unicode uses the explicit W export; ANSI input currently supports ASCII only. Input/output pointers, structures, arrays and callbacks outside the convenience operations fail explicitly; use a saved Node/Koffi script with the actual Microsoft type definitions for those signatures.
+Search or inspect unfamiliar functions before calling them. The catalog searches Microsoft Learn, requires an exact function name/signature and identifies its Windows system DLL; raw calls do not guess types or load arbitrary DLL paths. Each supplied `arguments` key must match a documented parameter, including explicit null values for optional parameters. Supported types are fixed-width Win32 scalars, pointer-sized integers/handles and input strings. Use decimal/hex strings for integers beyond JavaScript's safe integer range. Unicode uses the explicit W export; ANSI input currently supports ASCII only. Input/output pointers, structures, arrays and callbacks outside the convenience operations fail explicitly; use a saved Node/Koffi or Python/ctypes script with the actual Microsoft type definitions for those signatures.
 
 After explicit user foreground permission, a saved raw-call request for one resolved browser HWND can contain:
 
@@ -93,4 +124,4 @@ After explicit user foreground permission, a saved raw-call request for one reso
 
 Replace the HWND with live evidence, and add `proxy_url` when required by the local network route. Documentation network calls use only the supplied HTTP(S) proxy, not implicit environment proxy selection. Native operations themselves need no network. `raw_call` returns `value`, `last_error`, signature and documentation URL; interpret success/failure according to that API. GetLastError is not universal success detection and some APIs do not set it. Mode and tool annotations never replace task authorization. Do not use WinAPI to click browser consent or bypass denied permissions.
 
-Sources: [Koffi callbacks and calling conventions](https://koffi.dev/callbacks), [Koffi output parameters](https://koffi.dev/output), [PrintWindow and blocking behavior](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-printwindow), [Physical DPI context](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setthreaddpiawarenesscontext), [Process snapshots](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/ns-tlhelp32-processentry32w), [SetForegroundWindow restrictions](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow).
+Sources: [ctypes calling conventions and type declarations](https://docs.python.org/3/library/ctypes.html), [Pillow encoding options](https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html), [Koffi callbacks and calling conventions](https://koffi.dev/callbacks), [Koffi output parameters](https://koffi.dev/output), [PrintWindow and blocking behavior](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-printwindow), [Physical DPI context](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setthreaddpiawarenesscontext), [Process snapshots](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/ns-tlhelp32-processentry32w), [SetForegroundWindow restrictions](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow).

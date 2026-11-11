@@ -1,6 +1,6 @@
 # Setup and connection
 
-For MCP installation, dependencies and client registration, read [MCP installation and tools](mcp.md). MCP needs Node.js 20.9+/npm and exposes tools over stdio. Its explicit `bridge_service_start` tool starts or reuses the shared service described below; it does not load extensions or grant browser permissions. The service accepts HTTP client requests and authenticated extension WebSockets on the same loopback port. Independent [Windows desktop commands](windows-desktop.md) run in Node without Python, curl, the service or an extension; keep their prebuilt optional npm dependencies installed. The older guarded browser-creation helpers retain their own Python/native prerequisites.
+For MCP installation, dependencies and client registration, read [MCP installation and tools](mcp.md). MCP needs Node.js 20.9+/npm and exposes tools over stdio. Its explicit `bridge_service_start` tool starts or reuses the shared service described below; it does not load extensions or grant browser permissions. The service accepts HTTP client requests and authenticated extension WebSockets on the same loopback port. Independent [Windows desktop commands](windows-desktop.md) ship both Node and Python implementations. Node uses prebuilt optional npm dependencies without Python; Python uses ctypes/Pillow and its own pinned requirements without Node. Neither requires curl, the service or an extension. Prepare the chosen implementation as documented in that reference. The older guarded browser-creation helpers retain their own Python/native prerequisites.
 
 ## Runtime and server
 
@@ -22,7 +22,7 @@ scripts\browser-bridge.bat stop
 
 `--session` is required. Logs go to `%TMP%/<session-id>/browser bridge/server.log`; the launcher reports its path and whether the service started. A server already occupying the requested port is reported, never killed or silently replaced. `stop` requests shutdown of the Bridge at the configured URL; use only for the service you intend to stop. There is no cwd initialization.
 
-The HTTP commands in the client BAT require curl with `--fail-with-body` support (7.76+); the separate `windows` command does not. Windows 10/11 generally supplies curl. If unavailable, tell the user to install/update it from [curl for Windows](https://curl.se/windows/) and expose `curl.exe` on PATH. Do not bundle executables or download them automatically.
+The HTTP commands in the client BAT require curl with `--fail-with-body` support (7.76+); the separate `windows` and `windows-python` commands do not. Windows 10/11 generally supplies curl. If unavailable, tell the user to install/update it from [curl for Windows](https://curl.se/windows/) and expose `curl.exe` on PATH. Do not bundle executables or download them automatically.
 
 ## Connection recovery
 

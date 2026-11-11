@@ -42,7 +42,7 @@ The MCP entry point is `scripts/mcp/server.mjs` inside the installed skill. It u
 - [Node.js and Python clients](skills/browser-bridge/references/clients.md)
 - [Operations and debugging control](skills/browser-bridge/references/operations.md)
 - [Windows background window creation](skills/browser-bridge/references/windows.md)
-- [Windows process/window commands, screenshots and WinAPI without Python](skills/browser-bridge/references/windows-desktop.md)
+- [Independent Node and Python Windows commands, screenshots and WinAPI](skills/browser-bridge/references/windows-desktop.md)
 - [Firefox native APIs](skills/browser-bridge/references/firefox.md)
 
 Run commands shown in the skill documentation from the installed `browser-bridge` directory, or from `skills/browser-bridge` in a checkout. Existing installed copies and this checkout are separate; repository updates do not automatically reload an installed skill, extension or running service.
