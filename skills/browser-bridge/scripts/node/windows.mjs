@@ -1,6 +1,6 @@
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {stat, readFile} from 'node:fs/promises';
+import {stat, readFile, realpath} from 'node:fs/promises';
 import {resolve, join, basename} from 'node:path';
 import {profiles, webextension, find_tabs, window_control, defaultUrl} from './client.mjs';
 import {requireWindows} from './windows-platform.mjs';
@@ -100,6 +100,24 @@ export async function edge_defaults() {
   return pythonJson('edge_info.py');
 }
 
+async function extensionRegistrations(settings, profilePath, extensionPath) {
+  const target = (await realpath(extensionPath)).toLowerCase();
+  const installed = [];
+  for (const entry of Object.entries(settings ?? {})) {
+    const item = entry[1];
+    if (typeof item?.path !== 'string') continue;
+    try {
+      const path = await realpath(resolve(profilePath, 'Extensions', item.path));
+      if (path.toLowerCase() === target) installed.push(entry);
+    } catch (error) {
+      // Removed extensions can leave registrations; other filesystem failures
+      // remain errors rather than being reported as a missing installation.
+      if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error;
+    }
+  }
+  return installed;
+}
+
 // Inspect only a task-resolved physical profile; disconnected profiles are not installation requests.
 export async function edge_profile_extension_status({user_data_dir, profile_directory, context} = {}) {
   requireWindows();
@@ -130,8 +148,7 @@ export async function edge_profile_extension_status({user_data_dir, profile_dire
     return {...value, registration: 'unknown', private_allowed: null,
       guidance: 'The saved extension registry contains unreadable entries. Do not infer that installation is missing.'};
   }
-  const installed = entries.filter(([, item]) => typeof item?.path === 'string' &&
-    resolve(profilePath, 'Extensions', item.path).toLowerCase() === resolve(extensionPath).toLowerCase());
+  const installed = await extensionRegistrations(settings, profilePath, extensionPath);
   if (installed.length === 1) {
     const [extension_id, item] = installed[0];
     return {...value, registration: 'present', extension_id,
@@ -161,8 +178,8 @@ export async function create_edge_window({executable, user_data_dir, profile_dir
   if (!Object.hasOwn(localState.profile?.info_cache ?? {}, profile_directory)) throw new Error('The selected profile is not registered in Edge Local State.');
   const preferences = JSON.parse(await readFile(join(user_data_dir, profile_directory, 'Secure Preferences'), 'utf8'));
   const extensionPath = fileURLToPath(new URL('../../extension', import.meta.url));
-  const installed = Object.values(preferences.extensions?.settings ?? {}).filter(item =>
-    typeof item.path === 'string' && resolve(item.path).toLowerCase() === resolve(extensionPath).toLowerCase());
+  const installed = (await extensionRegistrations(preferences.extensions?.settings,
+    join(user_data_dir, profile_directory), extensionPath)).map(([, item]) => item);
   if (installed.length !== 1) throw new Error('Load this skill’s extension in the selected Edge profile before background window creation.');
   if (context === 'private' && installed[0].incognito !== true) throw new Error('Allow this extension in InPrivate for the selected Edge profile first.');
   if (url !== undefined && !['http:', 'https:'].includes(new URL(url).protocol)) throw new Error('Use an authorized HTTP(S) destination URL.');
