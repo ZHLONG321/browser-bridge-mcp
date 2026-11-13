@@ -284,7 +284,10 @@ async function capture({session_id, format = 'webp', quality = format === 'jpeg'
     if (rect.x + rect.width > width || rect.y + rect.height > height) throw new RangeError('Window crop must fit inside the captured window.');
     image.extract({left: rect.x, top: rect.y, width: rect.width, height: rect.height});
   }
-  const encoded = await (format === 'webp' ? image.webp({quality}) : image.jpeg({quality})).toBuffer();
+  // Window interaction favors lower encoding CPU; quality and dimensions stay explicit.
+  const encoded = await (format === 'webp'
+    ? image.webp({quality, ...(area.hwnd !== undefined ? {effort: 0} : {})})
+    : image.jpeg({quality})).toBuffer();
   const filename = `windows-${randomUUID()}.${format === 'jpeg' ? 'jpg' : 'webp'}`;
   await mkdir(directory, {recursive: true});
   const path = join(directory, filename);

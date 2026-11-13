@@ -2,6 +2,8 @@
 
 ## When to capture and inspect
 
+For dynamic or continuous observations, follow the [video recording policy](../SKILL.md#screenshots). Worker reuse optimizes individual window captures; it does not guarantee a sampling interval or frame rate. High-frequency screenshot loops must not replace video recording, including when recording is unavailable.
+
 Use screenshots proactively for questions about rendered appearance and during authorized troubleshooting of unexpected visible states. Useful cases include missing content, blank panels, loading indicators, error banners, disabled controls, overlays, clipping and differences from the user's screenshot. Capture the relevant current state before another authorized action changes it. Prefer `return_image: true` to inspect the image directly in the MCP response; use the local viewer only for filename-only responses. A filename or successful capture alone does not establish what the image shows.
 
 Choose the smallest necessary element/rectangle, with padding for useful context. Use a viewport or full document only when it is needed to explain the issue; avoid irrelevant screenshot area and image tokens. Combine the visual evidence with DOM/computed styles, console errors and relevant network observations under [DevTools guidance](operations.md#devtools-and-network-observation). Resolve targets through discovery and DOM inspection first; screenshot capture itself performs no search. Screenshots and diagnostics remain within the task's existing inspection, mutation and testing authorization.
