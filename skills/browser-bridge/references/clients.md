@@ -1,6 +1,6 @@
 # Code composition
 
-Coordinated calls, programmatic request construction and request/result processing must run in a saved `.mjs` or `.py` script that imports these clients directly. Do not orchestrate the workflow through MCP tools or CLI commands, including from inside a script. Save the script under the owning project's `tmp/<current session id>/`, then invoke the file. Never embed JavaScript/Python in shell commands with eval flags, here-documents/here-strings, or interpreter stdin. The examples below are script-file contents.
+Use `browser_action_screenshot` directly when one action, delay and capture covers the workflow. Other coordinated calls, programmatic request construction and request/result processing must run in a saved `.mjs` or `.py` script importing these clients directly. Do not orchestrate those workflows through MCP/CLI calls, including inside a script. Save the script under the owning project's `tmp/<current session id>/`, then invoke the file. Never embed JavaScript/Python in shell commands with eval flags, here-documents/here-strings, or interpreter stdin. The examples below are script-file contents.
 
 Run a saved file using the appropriate runner:
 
@@ -50,7 +50,7 @@ console.log(filename);
 const imagePath = join(screenshotDirectory(callerSessionId), filename);
 ```
 
-Resolve `resolvedTarget` and `callerSessionId` before this call; Firefox requires its live `connection_id` too. The helper verifies a complete nonempty file before returning its filename. Encoding preserves native dimensions; saved byte sizes go to stderr. See [Screenshots](screenshots.md) for full-page, viewport and element scopes, format compatibility and AI-controlled scrolling. Python retains its native CDP/WebExtension calls; this file-producing helper is a Node export.
+Resolve `resolvedTarget` and `callerSessionId` before this call; Firefox requires its live `connection_id` too. The helper verifies a complete nonempty file before returning its filename. Set `return_image: true` for `{filename, image}` containing the same saved bytes as a native MCP image content block; false/omitted preserves the filename string. When returning a script result to the AI, forward `image` as image content instead of printing its Base64 into text. Encoding preserves dimensions; saved byte sizes go to stderr. The Node client also exports `action_screenshot`, which reuses screenshot implementations after one action and `delay_ms`, defaulting to `return_image: true`; see [action and capture fields](screenshots.md#action-followed-by-delayed-capture). Prefer the smallest useful rectangle. Python retains its native CDP/WebExtension calls; these helpers are Node exports.
 
 ## Native video recording in Node.js
 

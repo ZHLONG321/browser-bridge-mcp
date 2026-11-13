@@ -73,6 +73,7 @@ export const webextension = fields => request('webextension', fields);
 
 // Keep the core transport dependency-free; file media helpers load on demand.
 export const screenshot = async fields => (await import('./screenshots.mjs')).screenshot(fields);
+export const action_screenshot = async fields => (await import('./action-screenshot.mjs')).action_screenshot(fields);
 export const recording_start = async fields => (await import('./recordings.mjs')).recording_start(fields);
 export const recording_status = async fields => (await import('./recordings.mjs')).recording_status(fields);
 export const recording_stop = async fields => (await import('./recordings.mjs')).recording_stop(fields);

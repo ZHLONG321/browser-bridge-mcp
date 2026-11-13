@@ -2,9 +2,9 @@
 
 ## When to capture and inspect
 
-Use screenshots proactively for questions about rendered appearance and during authorized troubleshooting of unexpected visible states. Useful cases include missing content, blank panels, loading indicators, error banners, disabled controls, overlays, clipping and differences from the user's screenshot. Capture the relevant current state before another authorized action changes it, then open the saved image with the client's image-viewing tool. A filename or successful capture alone does not establish what the image shows.
+Use screenshots proactively for questions about rendered appearance and during authorized troubleshooting of unexpected visible states. Useful cases include missing content, blank panels, loading indicators, error banners, disabled controls, overlays, clipping and differences from the user's screenshot. Capture the relevant current state before another authorized action changes it. Prefer `return_image: true` to inspect the image directly in the MCP response; use the local viewer only for filename-only responses. A filename or successful capture alone does not establish what the image shows.
 
-Start with the scope that explains the issue: a viewport for context, an element/rectangle with padding for a local defect, or the full document for overall layout. Combine the visual evidence with DOM/computed styles, console errors and relevant network observations under [DevTools guidance](operations.md#devtools-and-network-observation). Resolve targets through discovery and DOM inspection first; screenshot capture itself performs no search. Screenshots and diagnostics remain within the task's existing inspection, mutation and testing authorization.
+Choose the smallest necessary element/rectangle, with padding for useful context. Use a viewport or full document only when it is needed to explain the issue; avoid irrelevant screenshot area and image tokens. Combine the visual evidence with DOM/computed styles, console errors and relevant network observations under [DevTools guidance](operations.md#devtools-and-network-observation). Resolve targets through discovery and DOM inspection first; screenshot capture itself performs no search. Screenshots and diagnostics remain within the task's existing inspection, mutation and testing authorization.
 
 ## Blank or incomplete captures
 
@@ -39,9 +39,32 @@ Rectangles contain `x`, `y`, `width`, `height`, optional `reference: 'page' / 'v
 
 ## Files, encoding and size
 
-On Windows, screenshots go to `%TMP%/codex-<session_id>-browser-bridge/screen/`. Resolve `%TMP%` from the current environment. Other systems use their temporary directory when `TMP` is unset. Every successful call returns only a generated filename, for example `rect-<uuid>.webp`, after closing the writer and verifying that the file exists, is nonempty and has the complete byte length. A missing, empty, partial or failed write is an error. There is no Base64 image payload in the screenshot tool response and no automatic deletion.
+On Windows, screenshots go to `%TMP%/codex-<session_id>-browser-bridge/screen/`. Resolve `%TMP%` from the current environment. Other systems use their temporary directory when `TMP` is unset. A successful standalone call defaults to a generated filename, for example `rect-<uuid>.webp`, after closing the writer and verifying the complete nonempty byte length. With `return_image: true`, MCP returns filename text plus native image content (`type: image`, Base64 `data`, `mimeType: image/webp` or `image/jpeg`) from the same bytes just saved, without rereading or recapturing. The Node helper instead returns `{filename, image}` with that same image content block. False returns the original filename string. A missing, empty, partial or failed write is an error; no automatic deletion occurs.
 
-Reconstruct the absolute path from that directory and the returned filename, then use the current client's local image-viewing tool. Confirm that the client can read WebP when compatibility is unknown; if it cannot, explicitly select `format: 'jpeg'`. Do not infer image support solely from the browser's encoder or the model API.
+For filename-only responses, reconstruct the absolute path and use the client's local image-viewing tool. Image responses can be inspected directly. Confirm WebP compatibility when unknown; choose `format: 'jpeg'` if unsupported. Do not infer image support solely from the browser encoder. Native image content follows the [MCP tool-result specification](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#image-content).
+
+## Action followed by delayed capture
+
+`browser_action_screenshot` / Node `action_screenshot` executes one authorized action, waits the required `delay_ms` after its successful acknowledgement, then calls the existing browser or Windows screenshot implementation. It defaults to WebP and `return_image: true`; use false for filename only. Delay is not a readiness assertion or an exact capture timestamp: browser/protocol and capture work add latency. No mutation or screenshot is automatically retried.
+
+Pass the browser selection, caller `session_id`, `mode: 'authorized_mutation'`, and an `action`:
+
+- Chromium DOM click/input: `{type: 'javascript', scripts: ["const el=document.querySelector('#save'); if(!el)throw Error('Missing target'); el.click(); return true;"]}`. Optional `frame_id` uses the existing execution contract.
+- Chromium native input: `{type: 'cdp', commands: [...]}` using existing CDP commands, or `{type: 'navigate', url: ...}` / `{type: 'reload'}`.
+- Firefox: `{type: 'webextension', path: ..., args: [...]}` with the current `connection_id`; native IDs inside args must match the resolved target.
+
+Choose `capture` explicitly, preferring the necessary region:
+
+| Capture | Fields and coordinates |
+| --- | --- |
+| Browser | `{type: 'browser', scope: 'rect', rect: {...}}`; also supports `element` + `element_rect`, `viewport`, `full_page`, and optional `padding`; uses the browser rectangle contract above |
+| Windows desktop region | `{type: 'windows_region', x, y, width, height}` in physical desktop pixels; negative monitor coordinates allowed |
+| Windows window region | `{type: 'windows_window', hwnd, rect: {x, y, width, height}}`; physical pixels relative to the window top-left including frame; omit `rect` only when the whole window is needed |
+| Existing foreground region | `{type: 'windows_foreground', rect: {x, y, width, height}}`; crops the window already in the foreground without changing focus; omit `rect` for its whole window |
+
+Windows captures reuse the Node/MCP desktop screenshot tools, including their worker isolation, permissions and error behavior. Native HWND is not Bridge `window_id`; independently resolve/authorize it and keep captures within task scope. Desktop regions include overlapping applications; native window crops use PrintWindow and do not reveal a different inactive browser tab. No fallback changes capture source or coordinates.
+
+For example, add `delay_ms: 250` and `capture: {type: 'browser', scope: 'rect', rect: {x: 300, y: 200, width: 480, height: 240, reference: 'viewport'}}` to the resolved selection and action. The result is saved once and included directly in the response. On failure, `details.phase` identifies `action`, `delay` or `screenshot`; `action_completed: true` means the action already succeeded, so fix/retry capture separately rather than repeating the click. Uncertain action errors retain their job ID for `browser_job_status`.
 
 Every screenshot is encoded once at the selected quality. Default format is `webp`, default WebP quality is `100`; default JPEG quality is `90`. The optional `quality` range is the native 0..100 encoder range. Chromium's WebP quality 100 is lossless; Firefox uses its canvas encoder at maximum quality. Compression preserves native screenshot dimensions. There is no file-size threshold, adaptive quality loop, automatic downscaling or recapture to chase a target size. Encoders and browser surface dimensions still have their own limits; preserve their errors instead of shrinking or switching formats silently. Saved byte sizes are emitted as `screenshot_saved` diagnostics on stderr, not added to the filename-only response.
 

@@ -1,5 +1,7 @@
 import * as z from 'zod/v4';
 import {registerWindowsTools} from './windows-tools.mjs';
+import {windowsSchemas} from '../node/windows-schema.mjs';
+import {screenshotResult} from './screenshot-result.mjs';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {fileURLToPath} from 'node:url';
@@ -43,6 +45,7 @@ const screenshotFields = {
   session_id: z.string().regex(/^[A-Za-z0-9_-]+$/).describe('Current caller session ID; used in the screenshot directory. Never use the MCP server process/session ID.'),
   format: z.enum(['webp', 'jpeg']).optional().describe('Defaults to WebP; use JPEG when the client cannot read WebP.'),
   quality: integer.min(0).max(100).optional().describe('Encoder quality; defaults to 100 for WebP and 90 for JPEG. No size-based degradation or automatic resizing.'),
+  return_image: z.boolean().optional().describe('Save first, then return the same image directly to the AI in this response. Defaults to false for standalone screenshots; true avoids a separate image-viewing call.'),
   padding: z.number().nonnegative().optional().describe('Extra surrounding CSS pixels on every side, clipped at document edges.'),
   timeout_ms: z.number().positive().optional(),
 };
@@ -51,6 +54,22 @@ const screenshotRect = z.strictObject({
   reference: z.enum(['page', 'viewport']).optional().describe('Coordinate origin/reference extent; defaults to page.'),
   unit: z.enum(['css_px', 'percent', 'ratio']).optional().describe('Defaults to CSS pixels. Percent uses 0..100; ratio uses 0..1 of the reference extent.'),
 });
+const cdpCommands = z.array(z.strictObject({method: z.string().min(1), params: record.optional(), session_id: z.string().optional()})).min(1);
+const screenshotAction = z.discriminatedUnion('type', [
+  z.strictObject({type: z.literal('javascript'), scripts: z.array(z.string()).min(1), frame_id: z.string().optional()}),
+  z.strictObject({type: z.literal('cdp'), commands: cdpCommands}),
+  z.strictObject({type: z.literal('navigate'), url: z.string().min(1)}),
+  z.strictObject({type: z.literal('reload')}),
+  z.strictObject({type: z.literal('webextension'), path: z.string().min(1), args: z.array(z.unknown()).optional()}),
+]);
+const omitCaptureFields = {session_id: true, format: true, quality: true, return_image: true, timeout_ms: true};
+const actionCapture = z.discriminatedUnion('type', [
+  z.strictObject({type: z.literal('browser'), scope: z.enum(['rect', 'element', 'viewport', 'full_page']),
+    rect: screenshotRect.optional(), element_rect: screenshotRect.optional(), padding: screenshotFields.padding}),
+  windowsSchemas.capture_region.omit(omitCaptureFields).extend({type: z.literal('windows_region')}),
+  windowsSchemas.capture_window.omit(omitCaptureFields).extend({type: z.literal('windows_window')}),
+  windowsSchemas.capture_foreground.omit(omitCaptureFields).extend({type: z.literal('windows_foreground')}),
+]);
 const recordingFields = {...selection, tab_id: tab,
   session_id: z.string().regex(/^[A-Za-z0-9_-]+$/).describe('Current caller session ID, used for this job and its video directory.'),
 };
@@ -96,14 +115,14 @@ function result(value, isError = failed(value)) {
 
 export function registerTools(server) {
   registerWindowsTools(server);
-  function tool(name, description, fields, handler, readOnly = false, fileOutput = false) {
+  function tool(name, description, fields, handler, readOnly = false, fileOutput = false, formatResult = result) {
     server.registerTool(name, {
       description,
       inputSchema: z.strictObject(fields),
       annotations: {readOnlyHint: readOnly, destructiveHint: !readOnly && !fileOutput, idempotentHint: readOnly, openWorldHint: true},
     }, async args => {
       try {
-        return result(await handler(args));
+        return formatResult(await handler(args));
       } catch (error) {
         return result({
           error: {
@@ -137,17 +156,25 @@ export function registerTools(server) {
     ...selection, job_id: z.string().uuid(), tab_id: tab.optional(),
   }, bridge.job_status, true);
 
-  const screenshotDescription = 'Captures once without scrolling, focusing, searching or waiting for application readiness. Saves a compressed image at %TMP%/codex-<session_id>-browser-bridge/screen/ and returns ONLY its filename after confirming the complete file exists. Preserves native pixel dimensions; no file-size cap or automatic quality reduction. Use the exact directory plus filename with the client image-viewing tool. Firefox requires a live connection_id, native control and site permissions.';
+  const screenshotDescription = 'Prefer the smallest useful element/rect with enough context; use viewport/full_page only when that area is needed, to avoid irrelevant pixels and image tokens. Captures once without scrolling, focusing, searching or waiting for application readiness. Saves WebP by default at %TMP%/codex-<session_id>-browser-bridge/screen/ after confirming the complete file exists. return_image:true returns its filename AND native MCP image content directly to the AI; no separate image-viewing call is needed. False/omitted returns only the filename. Preserves native pixel dimensions; no file-size cap or automatic quality reduction. Firefox requires a live connection_id, native control and site permissions.';
   tool('browser_screenshot_full_page', `Capture the top document\'s full scrollable page extent. Nested scrolling containers retain their current visible contents; lazy loading and container scrolling belong to an AI-written script. ${screenshotDescription}`, screenshotFields,
-    args => bridge.screenshot({...args, scope: 'full_page'}), false, true);
+    args => bridge.screenshot({...args, scope: 'full_page'}), false, true, screenshotResult);
   tool('browser_screenshot_viewport', `Capture the current visible page viewport at its current scroll position. ${screenshotDescription}`, screenshotFields,
-    args => bridge.screenshot({...args, scope: 'viewport'}), false, true);
+    args => bridge.screenshot({...args, scope: 'viewport'}), false, true, screenshotResult);
   tool('browser_screenshot_element', `Capture an already-resolved element rectangle, optionally including surrounding padding. The caller supplies its current bounds in the top document\'s coordinate system; this tool performs no element lookup or search. Hidden overflow is not expanded. ${screenshotDescription}`, {
     ...screenshotFields, element_rect: screenshotRect,
-  }, args => bridge.screenshot({...args, scope: 'element'}), false, true);
+  }, args => bridge.screenshot({...args, scope: 'element'}), false, true, screenshotResult);
   tool('browser_screenshot_rect', `Capture the supplied rectangle in the top document. Coordinates may be CSS pixels, percentages or ratios relative to the page or current viewport. ${screenshotDescription}`, {
     ...screenshotFields, rect: screenshotRect,
-  }, args => bridge.screenshot({...args, scope: 'rect'}), false, true);
+  }, args => bridge.screenshot({...args, scope: 'rect'}), false, true, screenshotResult);
+
+  const {padding: unusedPadding, ...actionScreenshotFields} = screenshotFields;
+  tool('browser_action_screenshot', 'Execute one authorized browser action, wait delay_ms milliseconds AFTER its successful acknowledgement, then reuse the screenshot implementation selected by capture. Prefer browser rect/element, Windows desktop region, or a window-relative rect covering only the needed area with enough context; avoid unnecessary viewport/full-page/full-window pixels and image tokens. Chromium: javascript for DOM clicks/typing or cdp for native input; navigate/reload also supported. Firefox: webextension using the exact target native IDs in args. capture.type is browser, windows_region (desktop physical coordinates), windows_window (PrintWindow with optional window-relative rect), or windows_foreground (existing foreground only, optional rect). Never focuses automatically. Native HWND is separate from Bridge window_id; resolve and authorize the capture target independently. Default WebP, return_image:true saves locally and returns the same image directly to the AI. Set false for filename only. Delay is scheduling, not proof of readiness; protocol/capture latency adds time. No automatic retry. Errors preserve phase and action completion; a screenshot failure must not cause another click.', {
+    ...actionScreenshotFields, mode: z.literal('authorized_mutation'), allow_foreground: callFields.allow_foreground,
+    return_image: z.boolean().default(true).describe('Save locally and include image content directly for the AI; false returns only its filename.'),
+    delay_ms: integer.min(0).max(2147483647).describe('Required milliseconds after action acknowledgement before requesting capture; not an exact rendering deadline.'),
+    action: screenshotAction, capture: actionCapture,
+  }, bridge.action_screenshot, false, false, screenshotResult);
 
   tool('browser_recording_start', 'Start authorized native background recording of the resolved page viewport, without focusing or scrolling. Detect support from the live target/native start result; unsupported is returned explicitly, while permission/connection failures retain their real errors. Returns a recording_id/start state immediately after native acknowledgement, without waiting for recording completion. The worker survives MCP disconnect. Optional duration_ms auto-stops; otherwise call browser_recording_stop. Saves the original native video stream without transcoding, bitrate changes or a size cap. Configure codex_notify only with the known existing Codex host and caller thread; otherwise final does not trigger an automatic chat notification.', {
     ...recordingFields, mode: z.literal('authorized_mutation'),
@@ -174,7 +201,7 @@ export function registerTools(server) {
   tool('chromium_frame_list', 'List Chromium frames and their live IDs on the resolved tab.', tabFields, bridge.list_frames, true);
   tool('chromium_cdp_execute', 'Send ordered native Chromium CDP commands. These can mutate the page/browser regardless of mode. Preserve profile/privacy/window constraints and user authorization.', {
     ...tabFields,
-    commands: z.array(z.strictObject({method: z.string().min(1), params: record.optional(), session_id: z.string().optional()})).min(1),
+    commands: cdpCommands,
   }, bridge.cdp);
   tool('chromium_tab_open', 'Open one inactive Chromium tab in the supplied anchor tab\'s window. tab_id identifies the existing anchor. Preserve its profile/privacy/window. Close the task-created page when finished unless the user explicitly authorizes keeping it open.', {
     ...tabMutationFields, url: z.string().min(1),

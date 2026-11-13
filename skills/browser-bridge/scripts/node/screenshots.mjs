@@ -101,15 +101,40 @@ function imageBytes(data, format) {
   return bytes;
 }
 
-export async function screenshot({session_id, scope, rect, element_rect, padding = 0, format = 'webp', quality,
-  profile_id, context, window_id, tab_id, connection_id, service_url, timeout_ms}) {
-  const directory = screenshotDirectory(session_id);
+export function validateScreenshotOptions({session_id, scope, rect, element_rect, padding = 0, format = 'webp', quality,
+  profile_id, context, tab_id, connection_id, return_image = false}) {
+  screenshotDirectory(session_id);
+  if (!profile_id || !['normal', 'private'].includes(context) || typeof tab_id !== 'string' || !tab_id) {
+    throw new Error('Explicit profile_id, context and tab_id are required.');
+  }
   if (!['full_page', 'viewport', 'element', 'rect'].includes(scope)) throw new Error('Use full_page, viewport, element or rect screenshot scope.');
   if (!['webp', 'jpeg'].includes(format)) throw new Error('Use webp or jpeg for compressed screenshots.');
   quality ??= format === 'webp' ? 100 : 90;
   if (!Number.isInteger(quality) || quality < 0 || quality > 100 || !Number.isFinite(padding) || padding < 0) {
     throw new Error('quality must be an integer 0..100 and padding must be nonnegative CSS pixels.');
   }
+  if (typeof return_image !== 'boolean') throw new Error('return_image must be a boolean.');
+  if (scope === 'element' || scope === 'rect') {
+    const area = scope === 'element' ? element_rect : rect;
+    if (!area || !['x', 'y', 'width', 'height'].every(key => Number.isFinite(area[key])) || area.width <= 0 || area.height <= 0 ||
+      !['page', 'viewport'].includes(area.reference ?? 'page') || !['css_px', 'percent', 'ratio'].includes(area.unit ?? 'css_px')) {
+      throw new Error('Supply a finite rectangle with positive dimensions and valid reference/unit.');
+    }
+  }
+  if (tab_id.startsWith('firefox-tab:')) {
+    const prefix = `firefox-tab:${profile_id}:`;
+    const nativeId = Number(tab_id.slice(prefix.length));
+    if (!connection_id) throw new Error('Firefox screenshots require the current extension connection_id.');
+    if (!tab_id.startsWith(prefix) || !Number.isSafeInteger(nativeId) || nativeId < 0) throw new Error('Firefox tab does not belong to the supplied profile.');
+  }
+}
+
+export async function screenshot(options) {
+  validateScreenshotOptions(options);
+  const {session_id, scope, rect, element_rect, padding = 0, format = 'webp',
+    quality = format === 'webp' ? 100 : 90, return_image = false,
+    profile_id, context, window_id, tab_id, connection_id, service_url, timeout_ms} = options;
+  const directory = screenshotDirectory(session_id);
   const target = {profile_id, context, window_id, tab_id, service_url, timeout_ms};
   const firefox = typeof tab_id === 'string' && tab_id.startsWith('firefox-tab:');
   let metrics, nativeId;
@@ -148,5 +173,5 @@ export async function screenshot({session_id, scope, rect, element_rect, padding
   const saved = await stat(path);
   if (!saved.isFile() || saved.size !== bytes.length || saved.size === 0) throw new Error('Screenshot file is missing, empty or incomplete.');
   console.error(JSON.stringify({event: 'screenshot_saved', filename, bytes: saved.size, format, quality, rect_css_px: area}));
-  return filename;
+  return return_image ? {filename, image: {type: 'image', data: bytes.toString('base64'), mimeType: `image/${format}`}} : filename;
 }

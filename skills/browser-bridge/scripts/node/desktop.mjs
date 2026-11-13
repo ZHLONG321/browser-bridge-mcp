@@ -267,15 +267,23 @@ function bitmap(n, {hwnd, x, y, width, height}) {
   }
 }
 
-async function capture({session_id, format = 'webp', quality = format === 'jpeg' ? 90 : 100, ...area}) {
+async function capture({session_id, format = 'webp', quality = format === 'jpeg' ? 90 : 100, return_image = false, rect, ...area}) {
   requireWindows();
   const directory = screenshotDirectory(session_id);
   if (!['webp', 'jpeg'].includes(format)) throw new TypeError('format must be webp or jpeg.');
   integer(quality, 'quality', 1, 100);
+  if (typeof return_image !== 'boolean') throw new TypeError('return_image must be a boolean.');
   const n = await native();
   const {rgba, width, height} = withDpi(n, () => bitmap(n, area));
   const {default: sharp} = await import('sharp');
   const image = sharp(rgba, {raw: {width, height, channels: 4}, limitInputPixels: false}).removeAlpha();
+  if (rect !== undefined) {
+    if (area.hwnd === undefined) throw new TypeError('rect is a window-relative crop; desktop capture uses x/y/width/height.');
+    integer(rect.x, 'rect.x', 0); integer(rect.y, 'rect.y', 0);
+    integer(rect.width, 'rect.width', 1); integer(rect.height, 'rect.height', 1);
+    if (rect.x + rect.width > width || rect.y + rect.height > height) throw new RangeError('Window crop must fit inside the captured window.');
+    image.extract({left: rect.x, top: rect.y, width: rect.width, height: rect.height});
+  }
   const encoded = await (format === 'webp' ? image.webp({quality}) : image.jpeg({quality})).toBuffer();
   const filename = `windows-${randomUUID()}.${format === 'jpeg' ? 'jpg' : 'webp'}`;
   await mkdir(directory, {recursive: true});
@@ -284,8 +292,8 @@ async function capture({session_id, format = 'webp', quality = format === 'jpeg'
   try { await file.writeFile(encoded); await file.sync(); } finally { await file.close(); }
   const saved = await stat(path);
   if (!saved.isFile() || !saved.size || saved.size !== encoded.length) throw new Error('Screenshot file is missing or incomplete.');
-  console.error(`Windows screenshot: ${width}x${height}, ${saved.size} bytes (${format}).`);
-  return filename;
+  console.error(`Windows screenshot: ${rect?.width ?? width}x${rect?.height ?? height}, ${saved.size} bytes (${format}).`);
+  return return_image ? {filename, image: {type: 'image', data: encoded.toString('base64'), mimeType: `image/${format}`}} : filename;
 }
 
 export async function capture_window({hwnd, title, title_match = 'exact', ...options} = {}) {
