@@ -1,6 +1,6 @@
 ---
 name: browser-bridge
-description: Operate Chrome, Edge and Firefox through MCP, CLI or scripts. Discover profiles/tabs, use Chromium CDP or Firefox APIs, and use independent Python or Node Windows commands for process/window inspection, capture and WinAPI when browser calls fail.
+description: Use when operating Chrome, Edge or Firefox, or diagnosing browser connection, debugging, screenshot or window failures through Browser Bridge.
 ---
 
 # Browser Bridge
@@ -36,6 +36,8 @@ Windows commands and guarded Windows browser helpers are available only on Windo
 Preserve raw WinAPI access through `windows_search_api`, `windows_describe_api`, `windows_raw_call` and the matching CLI, Node and Python functions. Consult the exact Microsoft signature, parameter names and return semantics. A valid signature and `mode` label do not grant task authorization or sandbox effects. A foreground operation needs explicit permission, then the AI can call the appropriate Windows API with `allow_foreground: true` instead of asking the user to hold the browser in front and return to Codex. Windows may refuse activation; report the actual result rather than claiming it succeeded. After a timeout or worker exit, inspect actual state before repeating a mutation; no automatic replay occurs.
 
 ## Connection and task recovery
+
+When the required connection is missing, or its profile has no usable window, check the browser's process and window state as well as service and extension state before asking for a reload. A running browser process, a connected extension and an open window in the required profile/context are separate facts. Follow the recovery reference to distinguish them and choose an authorized recovery.
 
 The shared service accepts local HTTP client requests and uses authenticated WebSocket connections to both browser extensions. Scripts import the HTTP clients; they do not implement another extension connection or start a service per operation. Read [Connection recovery](references/setup.md#connection-recovery) for discovery failures and coordinated version upgrades. For an uncertain dispatched request, use `browser_job_status` or the client's `job_status` before considering another mutation; read [Job identity, results and reconnect semantics](references/operations.md#jobs-websockets-and-reconnection). A reconnect, an execution timeout and a browser/extension restart have different meanings. Preserve the actual error and task phase; do not use repeated extension reloads or debugging off/on as a general repair.
 
