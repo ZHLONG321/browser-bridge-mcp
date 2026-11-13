@@ -90,6 +90,8 @@ Sources: [CDP Network](https://chromedevtools.github.io/devtools-protocol/tot/Ne
 
 ## Chromium debugging control
 
+The extension settings checkbox only saves the profile-wide debugging preference. It succeeds even when no ordinary web page is open and does not select or attach an arbitrary tab. With the switch enabled, the next authorized page operation attaches to its resolved target automatically, including a page opened later. Switching off detaches owned sessions and blocks automatic attachment until debugging is explicitly enabled again.
+
 Use the existing `/request?profile_id=...&context=...` route, Node/Python `debugging` client, or the CLI `request` command. `status` is read-only and may omit `tab_id` to inspect the requested context/window. `enable` requires an exact existing tab, validates its current privacy/window again in the extension, persists the profile-wide enabled preference, and attaches only that tab. It performs a read-only debugger command to confirm the connection, with no tab/window activation. It does not grant installation, site, enterprise-policy or private-window permissions.
 
 ```json

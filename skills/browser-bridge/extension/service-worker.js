@@ -138,23 +138,14 @@ async function setDebuggingFromControl(enabled, targetTabId, scope) {
   await applyDebuggingSetting(true);
   try {
     if (revision !== debuggingControlRevision) return { enabled: debuggingEnabled };
-    if (targetTabId !== undefined) {
-      // Persist the requested preference separately from this tab's connection outcome.
-      scope?.check();
-      await persistDebuggingSetting(true, revision);
-      if (revision !== debuggingControlRevision || !debuggingEnabled) return { enabled: debuggingEnabled };
-    }
-    const eligible = tab => Number.isInteger(tab.id) && isDebuggableUrl(tab.url);
-    let target;
-    if (targetTabId !== undefined) {
-      target = await chrome.tabs.get(targetTabId);
-      if (!eligible(target)) throw new Error("The selected page does not support debugging.");
-    } else {
-      const selected = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-      target = selected.find(eligible);
-      if (!target) target = (await chrome.tabs.query({})).find(eligible);
-    }
-    if (!target) throw new Error("Open a web page before enabling debugging.");
+    // The UI switch saves permission without selecting or connecting a page.
+    // Explicit target enables still confirm their own connection below.
+    scope?.check();
+    await persistDebuggingSetting(true, revision);
+    if (revision !== debuggingControlRevision || !debuggingEnabled) return { enabled: debuggingEnabled };
+    if (targetTabId === undefined) return { enabled: true };
+    const target = await chrome.tabs.get(targetTabId);
+    if (!Number.isInteger(target.id) || !isDebuggableUrl(target.url)) throw new Error("The selected page does not support debugging.");
     if (revision !== debuggingControlRevision) return { enabled: debuggingEnabled };
     scope?.check();
     const lease = await debuggerSessions.acquire(target.id, {signal: scope?.signal, progress: scope?.progress, beforeAttach: () => scope?.native("native:debugger.attach")});
@@ -166,7 +157,6 @@ async function setDebuggingFromControl(enabled, targetTabId, scope) {
       await lease.release();
     }
     if (revision !== debuggingControlRevision || !debuggingEnabled) return { enabled: debuggingEnabled };
-    if (targetTabId === undefined) await persistDebuggingSetting(true, revision);
     return { enabled: true };
   } catch (error) {
     // A manual off/cancel intentionally detaches pending commands. A superseded
